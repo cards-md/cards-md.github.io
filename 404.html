@@ -2579,8 +2579,11 @@ function replaceCard(markdown, c, text) {
     const [start, end] = written(lines, card.lines);
     // the definitions after it are the file's, kept as written: a text that ends with them (the card as its whole
     // range reads, as a host shows it to be edited) has them once, not twice
-    const kept = lines.slice(card.lines[1], st.cards[c].lines[1]).join('\n').trim();
-    const mine = kept && text.trimEnd().endsWith(kept) ? text.trimEnd().slice(0, -kept.length).trimEnd() : text;
+    // (the very tail the file has after the card, its blank lines and the definitions, byte for byte: a card's own
+    // words may end as a definition does, a definition straight after a paragraph's line being the paragraph's)
+    const [, whole] = written(lines, [start, st.cards[c].lines[1]]);
+    const tail = whole > end ? `\n${lines.slice(end, whole).join('\n')}` : '';
+    const mine = tail && text.endsWith(tail) && text.length > tail.length ? text.slice(0, -tail.length) : text;
     lines.splice(start, end - start, ...mine.split('\n'));
   }
   const out = lines.join('\n');
