@@ -6092,14 +6092,23 @@ pixels.
     const KEY = 'cards.config.md';
     const base = `${enc(at.owner)}/${enc(at.repo)}`;
     const raw = (p) => `https://raw.githubusercontent.com/${base}/${enc(at.ref)}/${enc(p)}`;
-    let tree = null; // Map path → {dir}
+    let tree = null; // Map path → {dir}: the whole repo, where one call listed it
     let tried = null;
+    // A repo too big for one call (GitHub truncates the list: databook-hud's 68,194 files, 10-15):
+    // each folder listed by a call of its own, as it is opened, and kept for the visit
+    const folders = new Map(); // folder → its entries
+    const shas = new Map([['', at.ref]]); // folder → its tree, to list it by
+
+    const limit = (res) => {
+      const reset = Number(res.headers.get('x-ratelimit-reset')) * 1000;
+      return `GitHub's limit for visitors not signed in (60 file lists an hour) is reached${reset ? `; it resets at ${new Date(reset).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}.`;
+    };
 
     async function load() {
       const res = await fetch(`https://api.github.com/repos/${base}/git/trees/${enc(at.ref)}?recursive=1`);
       if (res.ok) {
         const body = await res.json();
-        tree = new Map(body.tree.map((e) => [e.path, { dir: e.type === 'tree' }]));
+        if (!body.truncated) tree = new Map(body.tree.map((e) => [e.path, { dir: e.type === 'tree' }]));
         return;
       }
       if (res.status === 404 || res.status === 422) throw new Said(`GitHub has no public repo ${at.owner}/${at.repo}${at.ref === 'HEAD' ? '' : ` at ${at.ref}`}. A private repo is not opened here.`);
@@ -6117,10 +6126,33 @@ pixels.
         }
         return;
       }
-      const reset = Number(res.headers.get('x-ratelimit-reset')) * 1000;
-      throw new Said(`GitHub's limit for visitors not signed in (60 file lists an hour) is reached, and jsDelivr could not list this repo.${reset ? ` It resets at ${new Date(reset).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}`);
+      throw new Said(`${limit(res)} jsDelivr could not list this repo either.`);
     }
     const ready = () => (tried ??= load());
+
+    /** A folder's entries ({name, path, dir}): from the whole list, or by a call of the folder's own. */
+    async function folderOf(dir) {
+      await ready();
+      if (tree) {
+        return [...tree.entries()].filter(([p]) => p.split('/').slice(0, -1).join('/') === dir)
+          .map(([p, e]) => ({ name: p.split('/').pop(), path: p, dir: e.dir }));
+      }
+      if (folders.has(dir)) return folders.get(dir);
+      if (!shas.has(dir)) {
+        const up = dir.split('/').slice(0, -1).join('/');
+        await folderOf(up);
+        if (!shas.has(dir)) throw new Said(`There is no folder ${dir} in ${at.owner}/${at.repo}.`);
+      }
+      const res = await fetch(`https://api.github.com/repos/${base}/git/trees/${enc(shas.get(dir))}`);
+      if (!res.ok) throw new Said(res.status === 403 || res.status === 429 ? `${dir || at.repo} could not be listed: ${limit(res)}` : `${dir || at.repo} could not be listed (${res.status}).`);
+      const entries = (await res.json()).tree.map((e) => {
+        const p = dir ? `${dir}/${e.path}` : e.path;
+        if (e.type === 'tree') shas.set(p, e.sha);
+        return { name: e.path, path: p, dir: e.type === 'tree' };
+      });
+      folders.set(dir, entries);
+      return entries;
+    }
 
     async function fetchText(p) {
       for (const url of [raw(p), `https://cdn.jsdelivr.net/gh/${base}@${enc(at.ref)}/${enc(p)}`]) {
@@ -6133,30 +6165,25 @@ pixels.
     const kept = () => { try { return store ? store.getItem(KEY) : null; } catch { return null; } };
     async function answer() {
       await ready().catch(() => {});
-      const theirs = tree && tree.has('.cards/config.md') ? await fetchText('.cards/config.md') : null;
+      const top = await folderOf('').catch(() => []);
+      const theirs = top.some((e) => e.name === '.cards' && e.dir) ? await fetchText('.cards/config.md') : null;
       const mine = kept();
       return settings.answer(lib, { mine, theirs, version: mine === null ? null : versionOf(mine), defaults, presets,
         person: 'this browser', folder: `${at.repo}'s .cards/config.md` });
     }
 
     // the file first opened: the one the URL names, else the folder's README
-    const readme = (dir) => {
-      const names = [...tree.keys()].filter((p) => !tree.get(p).dir && p.split('/').slice(0, -1).join('/') === dir);
-      return names.find((p) => /(^|\/)readme\.md$/i.test(p)) ?? null;
-    };
+    const readme = async (dir) => (await folderOf(dir)).find((e) => !e.dir && /^readme\.md$/i.test(e.name))?.path ?? null;
 
     return {
       name: `${at.owner}/${at.repo}`,
       async start() {
         await ready();
         if (at.kind === 'blob') return at.path;
-        return readme(at.path);
+        return readme(at.path).catch(() => null);
       },
       async list(dir) {
-        await ready();
-        const entries = [...tree.entries()].filter(([p]) => p.split('/').slice(0, -1).join('/') === dir)
-          .map(([p, e]) => ({ name: p.split('/').pop(), path: p, dir: e.dir }));
-        return paths.listing(entries);
+        return paths.listing((await folderOf(dir)).map((e) => ({ ...e })));
       },
       async read(p) {
         await ready();
