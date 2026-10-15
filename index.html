@@ -6968,7 +6968,8 @@ pixels.
   // A markdown file opens in the bench, once: opened again, it is the
   // one already open, with its edits. Any other opens in a tab of its own.
   let openedOne = false;
-  async function openFile(p) {
+  // `stay`: the files stay shown on a phone's width (a folder's README, opened with the folder)
+  async function openFile(p, { stay = false } = {}) {
     if (!/\.(md|markdown)$/i.test(p)) { window.open(source.raw(p), '_blank', 'noopener'); return; }
     const open = files.findIndex((f) => f.path === p);
     if (open < 0) {
@@ -6991,7 +6992,7 @@ pixels.
     if (current !== was) window.scrollTo(0, 0);
     // On a phone's width the files stand above the page: opened, it is
     // the page that is wanted, so they fold away (the button brings them back).
-    if (NARROW.matches) fold(true);
+    if (NARROW.matches && !stay) fold(true);
   }
   // The files folded away, or shown. Narrow: editing.css's phone width.
   const NARROW = window.matchMedia('(max-width: 920px)');
@@ -7092,16 +7093,21 @@ pixels.
   // the page, its arrow the folder.
   async function folder(p, into) {
     let entries;
-    try { entries = await source.list(p); } catch (e) { toast(e.message); return; }
+    try { entries = await source.list(p); } catch (e) { toast(e.message); return []; }
     into.replaceChildren(...entries.map((f) => {
       const li = el('li');
       if (f.dir) {
         const kids = el('ul', { hidden: true });
-        const toggle = (e) => {
+        // opened, a folder lists its files and opens its README, as GitHub shows a folder
+        let listed = null;
+        const toggle = async (e) => {
           const opening = kids.hidden;
           kids.hidden = !opening;
           e.currentTarget.setAttribute('aria-expanded', String(opening));
-          if (opening && !kids.dataset.listed) { kids.dataset.listed = '1'; folder(f.path, kids); }
+          if (!opening) return;
+          listed ??= folder(f.path, kids);
+          const readme = readmeIn(await listed);
+          if (readme) openFile(readme, { stay: true });
         };
         if (f.page) {
           li.className = 'paged';
@@ -7118,7 +7124,13 @@ pixels.
       return li;
     }));
     markOpen();
+    return entries;
   }
+  // A folder's README, as GitHub shows it: README.md in any case, else another README of markdown
+  const readmeIn = (entries) => {
+    const files = entries.filter((e) => !e.dir && /\.(md|markdown)$/i.test(e.name));
+    return (files.find((e) => /^readme\.md$/i.test(e.name)) ?? files.find((e) => /^readme\./i.test(e.name)))?.path ?? null;
+  };
 
   // --- settings (served only): cards.md's own choices, kept --------------
   //
@@ -7286,10 +7298,10 @@ pixels.
     if (readOnly) document.body.classList.add('readonly');
     if (source) {
       $('.files h2 span').textContent = source.name;
-      folder('', $('#files-tree'));
+      const top = folder('', $('#files-tree'));
       settingsPanel();
       // the file the URL names, or the folder's README, opened first
-      if (source.start) source.start().then((p) => (p ? openFile(p) : null), (e) => toast(e.message));
+      (source.start ? source.start() : top.then(readmeIn)).then((p) => (p ? openFile(p) : null), (e) => toast(e.message));
       // back and forward: the file the URL then names
       window.addEventListener('popstate', () => { const r = S.route(location.pathname); if (r && r.kind === 'blob' && r.path) openFile(r.path); });
     } else {
