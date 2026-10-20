@@ -1058,10 +1058,6 @@ body.served .desk { justify-content: flex-start; }
 .files button.dir::before { content: '▸ '; opacity: 0.6; }
 .files button.dir[aria-expanded="true"]::before { content: '▾ '; }
 .files button.other { opacity: 0.6; }
-/* a folder with its page: one row, the arrow opens the folder, the name the page */
-.files li.paged .row { display: flex; align-items: center; }
-.files li.paged button.arrow { flex: none; width: auto; padding: 3px 4px 3px 8px; }
-.files li.paged button.file { flex: 1; min-width: 0; padding-left: 0; }
 .files button.current { background: var(--lit); font-weight: 600; }
 body.files-folded .files { width: auto; }
 body.files-folded .files h2 span, body.files-folded #files-tree { display: none; }
@@ -2634,6 +2630,167 @@ function rowInput(st, maps = {}, c, row, value, ends) {
 }
 
 module.exports = { rowInput };
+
+},
+"./look": function (module, exports, require) {
+/**
+ * A buffer as an agent reads it (SPEC.md, "A buffer"): its markdown as the
+ * person sees it, each line that takes an input ending, after a `→`, with
+ * what an act there takes, so the agent names a row and a value, or a
+ * button, exactly as the screen does and never guesses:
+ *
+ *   - Save: by hand  → value: "by hand" (set) | "automatic"
+ *   - Name:  → value: words
+ *   - Add repo:  → action: "Add repo"
+ *   [^🗑remove]  → key: "Remove repo", action: "Remove repo"
+ *
+ * An act is `{ buffer, group, key, value | action }`: the group as the
+ * maps name it, the row's key, and the value or the button's words. What
+ * takes input is what the drawing says takes it (lib/fields.js rowDrawn,
+ * lib/actions.js, the buttons the stack reads), so the two never disagree.
+ * A line with no `→` takes nothing. A row the host keeps from the agent
+ * (`kept`, its keys) says so in place of what it takes; a secret is always
+ * the person's. With the buffer's `name`, a last line says how to read it.
+ */
+
+const { stack } = require('./stack');
+const { groupName } = require('./choices');
+const { rowActions } = require('./actions');
+const { rowDrawn, unwritten } = require('./fields');
+const { buttonRoles } = require('./roles');
+const { manyOf } = require('./values');
+
+const q = (s) => `"${s}"`;
+const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+const PERSONS = 'the person\'s alone (no act)';
+const valueOf = (v) => (typeof v === 'string' ? v : v.value);
+
+// what a number or a slider takes: its bounds, step and places, only those the map gives
+function numberSaid(field, slider) {
+  const parts = ['a number'];
+  const { min, max, step, decimals } = field;
+  if (min !== undefined && max !== undefined) parts.push(`${min} to ${max}`);
+  else if (min !== undefined) parts.push(`at least ${min}`);
+  else if (max !== undefined) parts.push(`at most ${max}`);
+  if (slider && step !== undefined) parts.push(`by ${step}`);
+  if (decimals !== undefined) parts.push(`${decimals} decimal${decimals === 1 ? '' : 's'}`);
+  return parts.join(', ');
+}
+
+// a span's moments: days alone a date, else a date and its time
+const spanForm = (drawing) => (drawing === 'days' ? 'a date, "YYYY-MM-DD"' : 'a date and time, "YYYY-MM-DD HH:MM"');
+
+// what a row's value takes, as it is drawn, or null for none; the value it holds marked `lit`: (set) where written, (default) where not
+function valueSaid(d, value, lit = 'set') {
+  if (d.choice) {
+    const { values, rocker, closed } = d.choice;
+    const list = values.map((v, i) => `${q(v.value)}${i === d.choice.lit ? ` (${lit})` : ''}`).join(' | ');
+    return `${list}${rocker || closed ? '' : ', or new words'}`;
+  }
+  const f = d.field;
+  if (d.turn === 'date') return 'a date, "YYYY-MM-DD"';
+  if (d.turn === 'time') return `a time, "HH:MM", every ${f.step ?? 5} minutes`;
+  if (d.turn === 'span') return `${spanForm(d.span.drawing)}; ends at ${q(d.span.ends)}`;
+  if (d.turn === 'number') return numberSaid(f);
+  if (d.turn === 'slider') return numberSaid(f, true);
+  if (d.turn === 'many') {
+    const chosen = manyOf(value).map((w) => w.toLowerCase());
+    const list = (f.values || []).map(valueOf).map((v) => `${q(v)}${chosen.includes(v.toLowerCase()) ? ` (${lit})` : ''}`).join(' | ');
+    return `any of ${list}${f.closed ? '' : ', or new words'}, comma-joined; "" for none`;
+  }
+  if (d.words === 'decimal') return numberSaid(f);
+  if (d.words) return 'words';
+  return null;
+}
+
+// a file's buttons as acts: each its words as the screen shows them (else its label), a caution one so (the role's word)
+const pressed = (roles, buttons) => {
+  const rs = buttonRoles(roles, buttons);
+  return buttons.map((b, i) => `${q(b.words ?? b.label)}${rs[i] === 'caution' ? ' (caution)' : ''}`);
+};
+
+// what a row takes: its value, its acts, the buttons its words end with
+function rowSaid(maps, d, key, value, acts, buttons, ends, lit) {
+  const takes = d.choice || d.turn || d.words || d.secret || ends || acts || buttons.length;
+  if (!takes) return [];
+  if (d.secret || (maps.kept || []).some((k) => same(k, key))) return [PERSONS];
+  const said = [];
+  const v = ends || valueSaid(d, value, lit);
+  if (v) said.push(`value: ${v}`);
+  if (acts && acts.buttons.length) said.push(`action: ${acts.buttons.map((b) => `${q(b.name)}${b.destructive ? ' (caution)' : ''}`).join(' | ')}`);
+  if (acts && acts.opens) said.push('opens a page, the person\'s tap (no act)');
+  if (buttons.length) said.push(`action: ${pressed(maps.roles, buttons).join(' | ')}`);
+  return said;
+}
+
+// buttons alone (a heading's, a paragraph's, a quote's, a plain item's): each its own key
+function buttonsSaid(maps, buttons) {
+  const names = buttons.map((b) => b.words ?? b.label);
+  return [...new Set(pressed(maps.roles, buttons).map((a, i) => ((maps.kept || []).some((k) => same(k, names[i])) ? PERSONS : `key: ${q(names[i])}, action: ${a}`)))];
+}
+
+// the last line of a block with words: a footnote's definition after it is the file's, not the block's words
+const DEF = /^ {0,3}\[\^[^[\]\s]+\]:/;
+function lastWords(lines, [start, end]) {
+  for (let i = end - 1; i > start; i--) if (lines[i].trim() && !DEF.test(lines[i])) return i;
+  return start;
+}
+
+/**
+ * A buffer's markdown as an agent reads it, each line that takes an input
+ * marked with what an act there takes.
+ * @param {string} markdown
+ * @param {{name?: string, choices?: object, secrets?: object, actions?: object, fields?: object, roles?: object, kept?: string[]}} [maps]
+ *   the host's maps, as html() and rowInput take them; `name` the buffer's;
+ *   `kept` the keys the person keeps from the agent, case aside
+ * @returns {string}
+ */
+function lookText(markdown, maps = {}) {
+  const text = String(markdown ?? '').replace(/\s+$/, '');
+  const st = stack(text);
+  const lines = text.split('\n');
+  const marks = new Map();
+  const added = new Map();
+  const mark = (i, said) => { if (said.length) marks.set(i, [...(marks.get(i) || []), ...said]); };
+  for (const g of st.groups) {
+    if (g.heading === null) continue;
+    for (const c of g.cards) {
+      for (const b of st.cards[c].blocks) {
+        if (b.buttons) mark(b.kind === 'heading' ? b.lines[0] : lastWords(lines, b.lines), buttonsSaid(maps, b.buttons));
+        for (const w of b.within || []) if (w.buttons) mark(lastWords(lines, w.lines), buttonsSaid(maps, w.buttons));
+        if (b.as !== 'rows') {
+          for (const it of b.items || []) if (it.buttons) mark(it.lines[0], buttonsSaid(maps, it.buttons));
+          continue;
+        }
+        // a span's ends row takes the span's form, its key its own
+        const drawn = b.rows.map((_, i) => rowDrawn(st, maps, c, i));
+        const ends = new Map(drawn.filter((d) => d.span && d.span.endsRow !== -1).map((d) => [d.span.endsRow, spanForm(d.span.drawing)]));
+        b.rows.forEach((r, i) => {
+          const acts = rowActions(st, maps.actions, c, i);
+          mark(r.lines[0], rowSaid(maps, drawn[i], r.key, r.value, acts, b.items[i].buttons || [], drawn[i].inside && ends.get(i)));
+        });
+        // the rows the file does not write, drawn faint where the map lists them: unwritten, the value is the default, never set
+        for (const u of unwritten(st, maps.fields, c)) {
+          const at = u.after === -1 ? b.rows[0].lines[0] - 1 : b.rows[u.after].lines[1] - 1;
+          const said = rowSaid(maps, rowDrawn(st, maps, c, u.key), u.key, u.field.default || '', null, [], null, 'default');
+          const line = `- ${u.key}: ${u.field.default ? `${u.field.default} (default)` : ''}`;
+          added.set(at, [...(added.get(at) || []), said.length ? `${line.trimEnd()}  → ${said.join('; ')}` : line.trimEnd()]);
+        }
+      }
+    }
+  }
+  const out = [...(added.get(-1) || [])];
+  lines.forEach((l, i) => {
+    const said = marks.get(i);
+    out.push(said ? `${l.replace(/\s+$/, '')}  → ${said.join('; ')}` : l);
+    out.push(...(added.get(i) || []));
+  });
+  const { name } = maps;
+  if (!name) return out.join('\n');
+  return `${out.join('\n')}\n\n(buffer: ${name} · act {buffer: "${name}", group: the row's ## heading, key: its name before the colon, and the value or action after its →}; a row with no → takes none)`;
+}
+
+module.exports = { lookText };
 
 },
 "./height-costs": function (module, exports, require) {
@@ -6692,7 +6849,7 @@ module.exports = {"➕":"plus","➖":"minus","✏":"pencil","📝":"square-pen",
     if (!loaded[name]) { loaded[name] = { exports: {} }; modules[name](loaded[name], loaded[name].exports, need); }
     return loaded[name].exports;
   }
-  globalThis.cardsmd = Object.assign({}, need('./blocks'), need('./stack'), need('./records'), need('./edits'), need('./diff'), need('./html'), need('./marks'), need('./choices'), need('./secrets'), need('./actions'), { roleOf: need('./roles').roleOf, buttonRoles: need('./roles').buttonRoles, iconOf: need('./roles').iconOf, icons: need('./roles').icons }, { rowInput: need('./buffers').rowInput, rowField: need('./fields').rowField, unwritten: need('./fields').unwritten, spanAt: need('./fields').spanAt, writeSpan: need('./fields').writeSpan }, need('./links'),
+  globalThis.cardsmd = Object.assign({}, need('./blocks'), need('./stack'), need('./records'), need('./edits'), need('./diff'), need('./html'), need('./marks'), need('./choices'), need('./secrets'), need('./actions'), { roleOf: need('./roles').roleOf, buttonRoles: need('./roles').buttonRoles, iconOf: need('./roles').iconOf, icons: need('./roles').icons }, { rowInput: need('./buffers').rowInput, lookText: need('./look').lookText, rowField: need('./fields').rowField, unwritten: need('./fields').unwritten, spanAt: need('./fields').spanAt, writeSpan: need('./fields').writeSpan }, need('./links'),
     { schemeOf: need('./buttons').schemeOf, targetOf: need('./buttons').targetOf, glyphOf: need('./buttons').glyphOf },
     { WHEEL: need('./wheel').WHEEL, wheel: need('./wheel').wheel, wheelPlace: need('./wheel').place, swipeSteps: need('./wheel').swipeSteps }, need('./values'),
     { drawPicture: need('./pictures').draw, pictureWidth: need('./pictures').widthFor, colourSlot: need('./pictures').slotOf },
@@ -8281,25 +8438,39 @@ globalThis.cardsCall = function (json) {
   /** The server's URL for a folder's path, as the browser takes it. */
   const raw = (p) => `/raw/${p.split('/').map(encodeURIComponent).join('/')}`;
 
-  // Left out of a listing: what a person does not open by hand.
-  const hidden = (name, dir) => (dir && name.startsWith('.')) || name === 'node_modules';
+  // Left out of a listing (vectors/listing.json's `hidden`): every name
+  // beginning with `.`, and the folders tools make that a person does not
+  // open by hand.
+  const HIDDEN = { dot: true, folders: ['node_modules'] };
+  const hidden = (name, dir) => name.startsWith('.') || (dir && HIDDEN.folders.includes(name));
 
-  /** One folder's entries ({name, path, dir}) as the files pane lists them:
-   *  what is hidden left out, folders first, then by name; a folder's page
-   *  (`Maine.md` beside `Maine/`) the folder's, not an entry of its own:
-   *  one row, the folder's, that names it (`page`). */
+  // A name's place in a folder, case and accents set aside: lowercased,
+  // decomposed (NFD), its combining marks (U+0300 to U+036F) dropped.
+  const keyOf = (name) => name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Two strings by Unicode code point, as Swift's and Kotlin's can match.
+  const byPoint = (a, b) => {
+    const x = Array.from(a, (c) => c.codePointAt(0)); const y = Array.from(b, (c) => c.codePointAt(0));
+    for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return x.length - y.length;
+  };
+  const byName = (a, b) => byPoint(keyOf(a.name), keyOf(b.name)) || byPoint(a.name, b.name);
+
+  /** One folder's entries ({name, path, dir}) as Files lists them
+   *  (vectors/listing.json): `rows`, what is hidden left out, its folders
+   *  first, then its files, each by name with case and accents set aside;
+   *  and `front`, the folder's README.md (its name in any case), drawn
+   *  under the list and not a row, or null. Nothing else is special: a
+   *  same-named file beside a folder (`notes.md`, `notes/`) is a row. */
   function listing(entries) {
-    const shown = entries.filter((e) => !hidden(e.name, e.dir));
-    const files = new Map(shown.filter((e) => !e.dir).map((e) => [e.name, e]));
-    const taken = new Set();
-    for (const e of shown) {
-      const page = e.dir && [`${e.name}.md`, `${e.name}.markdown`].map((n) => files.get(n)).find(Boolean);
-      if (page) { e.page = page.path; taken.add(page); }
-    }
-    return shown.filter((e) => !taken.has(e)).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+    const shown = entries.filter((e) => !hidden(e.name, e.dir)).map(({ name, path, dir }) => ({ name, path, dir: !!dir }));
+    const dirs = shown.filter((e) => e.dir).sort(byName);
+    const files = shown.filter((e) => !e.dir).sort(byName);
+    // more than one in a folder kept by case (README.md, readme.md): the first by code point
+    const readme = files.filter((e) => e.name.toLowerCase() === 'readme.md').sort((a, b) => byPoint(a.name, b.name))[0];
+    return { rows: [...dirs, ...files.filter((e) => e !== readme)], front: readme ? readme.path : null };
   }
 
-  return { linked, raw, listing, hidden };
+  return { linked, raw, listing, hidden, HIDDEN };
 }));
 </script>
 <script>// The editors, one per card kind: each takes the stack and a card's
@@ -10052,7 +10223,7 @@ pixels.
 // whatever is behind it. Each source gives
 //
 //   name                   the folder's name, over the files pane
-//   list(path)             a folder's entries, as paths.js's listing gives them
+//   list(path)             a folder's { rows, front }, as paths.js's listing gives them
 //   read(path)             { text, version }
 //   write(path, text, version)   { version } | { conflict: true } | { error }; none where read-only
 //   raw(path)              the URL an image or another file is drawn from
@@ -10222,8 +10393,8 @@ pixels.
         person: 'this browser', folder: `${at.repo}'s .cards/config.md` });
     }
 
-    // the file first opened: the one the URL names, else the folder's README
-    const readme = async (dir) => (await folderOf(dir)).find((e) => !e.dir && /^readme\.md$/i.test(e.name))?.path ?? null;
+    // the file first opened: the one the URL names, else the folder's front page (its README.md)
+    const readme = async (dir) => paths.listing(await folderOf(dir)).front;
 
     return {
       name: `${at.owner}/${at.repo}`,
@@ -10233,7 +10404,7 @@ pixels.
         return readme(at.path).catch(() => null);
       },
       async list(dir) {
-        return paths.listing((await folderOf(dir)).map((e) => ({ ...e })));
+        return paths.listing(await folderOf(dir));
       },
       async read(p) {
         await ready();
@@ -11118,7 +11289,7 @@ pixels.
   // A markdown file opens in the bench, once: opened again, it is the
   // one already open, with its edits. Any other opens in a tab of its own.
   let openedOne = false;
-  // `stay`: the files stay shown on a phone's width (a folder's README, opened with the folder)
+  // `stay`: the files stay shown on a phone's width (a folder's front page, opened with the folder, under its list)
   async function openFile(p, { stay = false } = {}) {
     if (!/\.(md|markdown)$/i.test(p)) { window.open(source.raw(p), '_blank', 'noopener'); return; }
     const open = files.findIndex((f) => f.path === p);
@@ -11238,35 +11409,27 @@ pixels.
     render();
   }
 
-  // A folder's entries, as a list; a folder opens in place, below its name.
-  // A folder with its page (serve.js's `page`) is one row: its name opens
-  // the page, its arrow the folder.
+  // A folder's rows, as a list (paths.js's listing: folders first, then
+  // files, each its own row); a folder opens in place, below its name, and
+  // opens its front page (its README.md, not a row) with the list kept.
   async function folder(p, into) {
-    let entries;
-    try { entries = await source.list(p); } catch (e) { toast(e.message); return []; }
-    into.replaceChildren(...entries.map((f) => {
+    let listed;
+    try { listed = await source.list(p); } catch (e) { toast(e.message); return { rows: [], front: null }; }
+    into.replaceChildren(...listed.rows.map((f) => {
       const li = el('li');
       if (f.dir) {
         const kids = el('ul', { hidden: true });
-        // opened, a folder lists its files and opens its README, as GitHub shows a folder
-        let listed = null;
+        let inside = null;
         const toggle = async (e) => {
           const opening = kids.hidden;
           kids.hidden = !opening;
           e.currentTarget.setAttribute('aria-expanded', String(opening));
           if (!opening) return;
-          listed ??= folder(f.path, kids);
-          const readme = readmeIn(await listed);
-          if (readme) openFile(readme, { stay: true });
+          inside ??= folder(f.path, kids);
+          const { front } = await inside;
+          if (front) openFile(front, { stay: true });
         };
-        if (f.page) {
-          li.className = 'paged';
-          li.append(el('div', { class: 'row' },
-            el('button', { type: 'button', class: 'dir arrow', ariaExpanded: 'false', ariaLabel: `The folder ${f.name}`, title: `${f.path}/`, data: { path: f.path }, onclick: toggle }),
-            el('button', { type: 'button', class: 'file', textContent: f.name, title: f.page, data: { path: f.page }, onclick: () => openFile(f.page) })), kids);
-        } else {
-          li.append(el('button', { type: 'button', class: 'dir', textContent: f.name, ariaExpanded: 'false', data: { path: f.path }, onclick: toggle }), kids);
-        }
+        li.append(el('button', { type: 'button', class: 'dir', textContent: f.name, ariaExpanded: 'false', data: { path: f.path }, onclick: toggle }), kids);
       } else {
         li.append(el('button', { type: 'button', class: /\.(md|markdown)$/i.test(f.name) ? 'file' : 'file other',
           textContent: f.name, title: f.path, data: { path: f.path }, onclick: () => openFile(f.path) }));
@@ -11274,13 +11437,8 @@ pixels.
       return li;
     }));
     markOpen();
-    return entries;
+    return listed;
   }
-  // A folder's README, as GitHub shows it: README.md in any case, else another README of markdown
-  const readmeIn = (entries) => {
-    const files = entries.filter((e) => !e.dir && /\.(md|markdown)$/i.test(e.name));
-    return (files.find((e) => /^readme\.md$/i.test(e.name)) ?? files.find((e) => /^readme\./i.test(e.name)))?.path ?? null;
-  };
 
   // --- settings (served only): cards.md's own choices, kept --------------
   //
@@ -11453,8 +11611,8 @@ pixels.
       $('.files h2 span').textContent = source.name;
       const top = folder('', $('#files-tree'));
       settingsPanel();
-      // the file the URL names, or the folder's README, opened first
-      (source.start ? source.start() : top.then(readmeIn)).then((p) => (p ? openFile(p) : null), (e) => toast(e.message));
+      // the file the URL names, or the folder's front page (its README.md), opened first
+      (source.start ? source.start() : top.then((l) => l.front)).then((p) => (p ? openFile(p) : null), (e) => toast(e.message));
       // back and forward: the file the URL then names
       window.addEventListener('popstate', () => { const r = S.route(location.pathname); if (r && r.kind === 'blob' && r.path) openFile(r.path); });
     } else {
