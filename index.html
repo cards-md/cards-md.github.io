@@ -8570,8 +8570,10 @@ globalThis.cardsCall = function (json) {
 // for it: { control, chips(), more() } (proto/editing.js draws it). Shared by the web bench (proto/
 // editing.js) and the metrics sheet (design/), so what the sheet
 // measures is what the bench draws. `env` is the host's: the engine
-// (lib), the file's source, Done, a record's and a card's actions, and
-// refresh() to draw the bar again when what it offers changes.
+// (lib), the file's source, Done, a record's and a card's actions,
+// refresh() to draw the bar again when what it offers changes, and
+// html(markdown), the stack drawn as the page draws it (a chip drawn
+// again for a value picked while its card is edited; none, it shows itself).
 //
 // An editor is the card's own markup, its words made editable where
 // they stand: the same elements, classes and boxes html() draws, so
@@ -8816,26 +8818,74 @@ globalThis.cardsCall = function (json) {
     // stood beside its key when the card was opened stays beside it as it
     // grows; the layout is worked out again after Done. Adding is in the
     // bar, with the keys other records of this kind have; rearranging is
-    // its own mode.
+    // its own mode. A row drawn as a chip (a choice, a rocker, a field's
+    // chip; a span's two rows aside) stays its chip, where it stood: a pick
+    // is its value in the draft, written with the card, never on its own;
+    // its key is words as any key, and Return passes its value by.
     function rowsEditor(st, i, b, options) {
       // the rows as read, the file's own (a row it does not write is no row here)
       const viewRows = options.view ? [...options.view.querySelectorAll('.cards-row:not(.cards-unwritten)')] : [];
+      // a row read as a chip: its row as drawn, and its value's cell, the chip in it
+      const CHIP = ':scope > .cards-select, :scope > .cards-rocker, :scope > .cards-turn:not([data-turn="span"])';
+      const chipOf = (n) => {
+        const r = viewRows[n];
+        const dd = r && !b.rows[n].body && r.querySelector(':scope > dd');
+        return dd && dd.querySelector(CHIP) ? { row: r, dd: dd.cloneNode(true) } : null;
+      };
       const stoodBeside = (n) => {
         const r = viewRows[n];
         const dt = r && r.querySelector('dt');
         const dd = r && r.querySelector('dd');
         return !!(dt && dd && dd.getBoundingClientRect().top < dt.getBoundingClientRect().bottom - 1);
       };
-      const rows = b.rows.map((r, n) => ({ key: r.key, value: r.value, body: r.body, from: n, beside: stoodBeside(n) }));
+      const rows = b.rows.map((r, n) => ({ key: r.key, value: r.value, body: r.body, from: n, beside: stoodBeside(n), chip: chipOf(n) }));
       const box = el('div', { class: 'cards-card cards-list cards-rows' });
       let arranging = false;
+      // the next row whose value is typed, after n: a chip's is picked
+      const onward = (n) => { const m = rows.findIndex((r, k) => k > n && !r.chip); if (m >= 0) write(m); else addRow(); };
+      // A pick in a chip: its row's value in the draft, the chip drawn again
+      // as it will read (the file with that row so, as the page draws it)
+      function picked(row, value) {
+        row.value = value;
+        const was = row.chip.dd;
+        const live = was.querySelector(CHIP);
+        if (live) live.dataset.written = value; // taking these words again writes nothing
+        if (!env.html) return;
+        try {
+          const page = document.createElement('template');
+          page.innerHTML = env.html(lib.setRow(env.source(), i, row.from, value));
+          const fresh = page.content.querySelector(`.cards-row[data-lines="${row.chip.row.dataset.lines}"] > dd`);
+          if (!fresh || !fresh.querySelector(CHIP)) return;
+          const focused = was.contains(document.activeElement);
+          row.chip.dd = fresh;
+          hear(row, fresh);
+          was.replaceWith(fresh);
+          if (focused) fresh.querySelector(CHIP).focus({ preventScroll: true });
+        } catch (e) { /* the words kept in the draft; the chip shows what it showed */ }
+      }
+      // a chip's picks, and a rocker's tap: the draft's
+      function hear(row, dd) {
+        dd.addEventListener('cards-select', (e) => { if (!('ends' in e.detail)) picked(row, e.detail.value); });
+        dd.addEventListener('click', (e) => { const r = e.target.closest('.cards-rocker'); if (r) picked(row, r.dataset.value); });
+      }
+      rows.forEach((row) => { if (row.chip) hear(row, row.chip.dd); });
 
       function write(focusAt, part = 'value') {
         arranging = false;
         const dl = el('dl');
         rows.forEach((row, n) => {
-          const rowEl = el('div', { class: `cards-row${row.body ? ' cards-row-body' : ''}${row.beside ? ' beside' : ''}` });
           const dt = words(el('dt'), row.key, { placeholder: 'Field', spell: false });
+          if (row.chip) {
+            // drawn as read: its row's look, its chip where it stood
+            const rowEl = el('div', { class: row.chip.row.className });
+            if (row.chip.row.dataset.field) rowEl.dataset.field = row.chip.row.dataset.field;
+            dt.addEventListener('input', () => { row.key = textOf(dt); });
+            dt.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); onward(n); } });
+            rowEl.append(dt, row.chip.dd);
+            dl.append(rowEl);
+            return;
+          }
+          const rowEl = el('div', { class: `cards-row${row.body ? ' cards-row-body' : ''}${row.beside ? ' beside' : ''}` });
           const value = row.body ? words(el('span', { class: 'row-value' }), row.value, { placeholder: 'Value' })
             : words(el('dd'), row.value, { placeholder: 'Value' });
           // a number's or a date's words, with the keyboard its field asks (the read row's inputmode)
@@ -8859,7 +8909,7 @@ globalThis.cardsCall = function (json) {
             if (e.key === 'Backspace' && !row.value) { e.preventDefault(); placeCaret(dt); return; }
             if (e.key !== 'Enter' || e.shiftKey) return;
             e.preventDefault();
-            if (n + 1 < rows.length) write(n + 1); else addRow();
+            onward(n);
           });
           rowEl.append(dt, dd);
           dl.append(rowEl);
@@ -8868,7 +8918,8 @@ globalThis.cardsCall = function (json) {
         if (env.refresh) env.refresh();
         if (focusAt !== undefined) {
           const target = box.querySelectorAll('.cards-row')[focusAt];
-          if (target) placeCaret(part === 'key' ? target.querySelector('dt') : target.querySelector('.row-value, dd'));
+          // a chip's row: its key, the words it has
+          if (target) placeCaret(part === 'key' ? target.querySelector('dt') : target.querySelector('.row-value, dd.field') || target.querySelector('dt'));
         }
       }
       function arrange() {
@@ -8890,7 +8941,7 @@ globalThis.cardsCall = function (json) {
       return {
         el: box,
         label: 'Edit fields',
-        focus: () => { const f = box.querySelector('.row-value, dd'); if (f) placeCaret(f); },
+        focus: () => { const f = box.querySelector('.row-value, dd.field') || box.querySelector('dt'); if (f) placeCaret(f); },
         bar: {
           control: { arranging: () => arranging, arrange: () => (arranging ? write(0) : arrange()) },
           chips: () => [
@@ -10589,6 +10640,8 @@ pixels.
     record: (g, key) => recordActions(g, key),
     cardActions: (i, remove = true) => cardActions(i, remove),
     refresh: () => drawBar(),
+    // the stack as the page draws it: a chip picked while its card is edited, drawn again
+    html: (md) => lib.html(md, { choices: file().choices, fields: file().fields, images: photo, colours }),
   });
 
   const files = samples.map((s) => ({ name: s.name, source: s.markdown, choices: s.choices, fields: s.fields, buffer: s.buffer, earlier: [] }));
