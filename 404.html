@@ -756,6 +756,8 @@ details.cards-footnote dl { margin: 0 calc(-1 * var(--cards-inset)); }
 /* a row drawn by its field (SPEC.md "A row's field"): its description a line under its key, quiet; a row the
    file does not write, faint till a tap writes it */
 .cards-description { display: block; font-weight: 400; font-size: var(--cards-quiet-size); line-height: 1.35; color: var(--cards-ink3); }
+/* a description the host says needs care (couldn't read: why): in caution's ink, as a caution button's words */
+.cards-description[data-tone="caution"] { color: var(--cards-caution); }
 .cards-unwritten { opacity: 0.55; }
 
 /* a chat (proper's chat view): turns, steps and asks, folded as written.
@@ -2388,6 +2390,15 @@ function valueOf(v) {
   return colours.length ? { value, colours } : value;
 }
 
+// a description as the map gives it, words or {text, tone}: its words and a
+// tone, caution alone (any other left out, its words kept); null for none
+function descriptionOf(d) {
+  const object = d !== null && typeof d === 'object';
+  const text = object ? d.text : d;
+  if (typeof text !== 'string' || !text.trim()) return null;
+  return { text: text.trim(), ...(object && d.tone === 'caution' ? { tone: 'caution' } : {}) };
+}
+
 // a field as the map gives it, as rowField gives it back; null for none
 function fieldOf(given) {
   if (given === null || typeof given !== 'object' || Array.isArray(given)) return null;
@@ -2397,7 +2408,8 @@ function fieldOf(given) {
   if (given.closed === true) out.closed = true;
   if (showOf(given.show) !== undefined) out.show = given.show;
   if (given.default !== undefined && given.default !== null) out.default = String(given.default);
-  if (typeof given.description === 'string' && given.description.trim()) out.description = given.description.trim();
+  const about = descriptionOf(given.description);
+  if (about) { out.description = about.text; if (about.tone) out.tone = about.tone; }
   // a number's, a slider's and a time's: bounds, places and step; a span's: its other key, and how a new one is drawn
   for (const k of ['min', 'max', 'step']) if (typeof given[k] === 'number' && Number.isFinite(given[k]) && (k !== 'step' || given[k] > 0)) out[k] = given[k];
   if (Number.isInteger(given.decimals) && given.decimals >= 0 && given.decimals <= 6) out.decimals = given.decimals;
@@ -2429,7 +2441,8 @@ function spansIn(section) {
  * Row `row` of card `c`'s field, or null when the map names none.
  * @param {{cards: Array, groups: Array}} st a stack
  * @param {Object<string, Object<string, Object>>|undefined} fields
- * @returns {{type?: string, values?: Array<string|{value: string, colours: string[]}>, closed?: true, show?: number|'all', default?: string, description?: string}|null}
+ * @returns {{type?: string, values?: Array<string|{value: string, colours: string[]}>, closed?: true, show?: number|'all', default?: string, description?: string, tone?: 'caution'}|null}
+ *   (a description given as `{text, tone}` comes back flat: its words `description`, and `tone` only when caution)
  */
 function rowField(st, fields, c, row) {
   const at = fields && cardOf(st, c);
@@ -6462,7 +6475,7 @@ function render(markdown, { choices, secrets, actions, images, colours, buffer, 
     const where = r.lines ? at(r) : ` data-key="${esc(r.key)}" data-after="${r.after}"`;
     const flags = f && f.type ? ` data-field="${f.type}"` : '';
     const hint = kind && kind !== 'text' && !text && !choice && !secret && !turn ? ` inputmode="${kind}"` : '';
-    const about = f && f.description ? `<span class="cards-description">${esc(f.description)}</span>` : '';
+    const about = f && f.description ? `<span class="cards-description"${f.tone === 'caution' ? ' data-tone="caution"' : ''}>${esc(f.description)}</span>` : '';
     const after = (r.body ? '' : chips(bs, roles)) + (!acts ? '' : acts.buttons.map(button).join('') + (acts.opens ? '<span class="cards-opens-mark" aria-hidden="true">›</span>' : ''));
     return `<div class="cards-row${long}${as}${toClass(r)}"${where}${to(r)}${flags}${acts && acts.opens ? ' data-opens=""' : ''}>${r.key ? `<dt>${esc(r.key)}${about}</dt>` : ''}<dd${hint}>${value}${after}${body}${r.body ? chips(bs, roles) : ''}</dd></div>`;
   };
