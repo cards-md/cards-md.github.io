@@ -235,6 +235,8 @@
 .cards-row dt { color: var(--cards-ink2); font-size: inherit; }
 .cards-row dd { margin: 0; min-width: 0; font-size: inherit; }
 .cards-row-body { flex-direction: column; gap: 4px; }
+/* a row drawn as its control alone (a bare field): no key, the control across the row from its start */
+.cards-row[data-bare] > dd { flex: 1 1 100%; }
 .cards-row dd ul, .cards-row dd ol { margin: 6px 0 0; padding-left: 20px; }
 
 /* a row drawn as a choice (the host's choices): the select, one chip,
@@ -246,7 +248,7 @@
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
   cursor: grab; outline: none; }
 .cards-select[hidden] { display: none; }
-/* depth (the person, 10-20): a drum seen side on, its ends turning away into the ground */
+/* depth: a drum seen side on, its ends turning away into the ground */
 .cards-select::before { content: ''; position: absolute; z-index: 0; inset: calc(-1 * var(--select-rise)) 0; border-radius: 999px;
   background: linear-gradient(90deg, var(--cards-card), var(--cards-chip) 24%, var(--cards-chip) 76%, var(--cards-card));
   box-shadow: inset 0 0 0 var(--cards-hairline) var(--cards-hair),
@@ -1268,8 +1270,8 @@ module.exports = { markOf };
  * host's.
  *
  * A footnote whose label begins with an emoji, and whose definition is a
- * URI, is a button: `[^➕]: hemlock:intent/new`, or with its words,
- * `[^↩sam]: [Reply](hemlock:messages/reply?to=sam)`. Any other footnote
+ * URI, is a button: `[^➕]: app:intent/new`, or with its words,
+ * `[^↩sam]: [Reply](app:messages/reply?to=sam)`. Any other footnote
  * is a footnote (SPEC.md, "Footnotes"), found here beside the buttons and
  * read by lib/stack.js. A button's definition is the file's, as a
  * link reference definition is: it draws nothing, its lines are the block
@@ -1566,8 +1568,8 @@ module.exports = { keepSchemes, schemeOf, targetOf, glyphOf, definition, definit
  * it acts on the query): the longest key that fits wins, so an exact URI
  * beats any prefix.
  *
- *   { 'hemlock:repo/remove': 'caution', 'hemlock:repo/push': 'main' }
- *   // hemlock:repo/push?repo=notes and hemlock:repo/push/all are main; hemlock:repo/pushall is none
+ *   { 'app:repo/remove': 'caution', 'app:repo/push': 'main' }
+ *   // app:repo/push?repo=notes and app:repo/push/all are main; app:repo/pushall is none
  *
  * Of a heading's buttons (its toolbar), where the map makes none `main`,
  * the first is `main`, unless the map makes that one `caution` or
@@ -2406,6 +2408,8 @@ function fieldOf(given) {
   if (TYPES.includes(given.type)) out.type = given.type;
   if (Array.isArray(given.values)) out.values = given.values.map(valueOf);
   if (given.closed === true) out.closed = true;
+  // drawn as its control alone, no key: the host's choice, never guessed
+  if (given.bare === true) out.bare = true;
   if (showOf(given.show) !== undefined) out.show = given.show;
   if (given.default !== undefined && given.default !== null) out.default = String(given.default);
   const about = descriptionOf(given.description);
@@ -2441,7 +2445,7 @@ function spansIn(section) {
  * Row `row` of card `c`'s field, or null when the map names none.
  * @param {{cards: Array, groups: Array}} st a stack
  * @param {Object<string, Object<string, Object>>|undefined} fields
- * @returns {{type?: string, values?: Array<string|{value: string, colours: string[]}>, closed?: true, show?: number|'all', default?: string, description?: string, tone?: 'caution'}|null}
+ * @returns {{type?: string, values?: Array<string|{value: string, colours: string[]}>, closed?: true, show?: number|'all', default?: string, description?: string, tone?: 'caution', bare?: true}|null}
  *   (a description given as `{text, tone}` comes back flat: its words `description`, and `tone` only when caution)
  */
 function rowField(st, fields, c, row) {
@@ -2851,12 +2855,12 @@ module.exports = {
   rowScale: 1.066667,
   cellChars: 32.432432,
   perChar: 7.5,
-  intercept: -20.3,
+  intercept: -20.29,
   costs: {
-    prose: 26.78,
-    blank: 14.23,
-    h12: 35.64,
-    h3plus: 36.02,
+    prose: 26.77,
+    blank: 14.24,
+    h12: 35.63,
+    h3plus: 36.01,
     item: 12.33,
     itemLine: 22.39,
     row: 21.4,
@@ -2865,11 +2869,11 @@ module.exports = {
     tableWrap: 17.93,
     table: -5.39,
     codeLine: 21.45,
-    codeBlock: 17.67,
+    codeBlock: 17.66,
     quote: 29.48,
     picture: 45.19,
     pictureRow: 18.76,
-    pictureKey: 10.38
+    pictureKey: 10.36
   }
 };
 
@@ -2911,7 +2915,7 @@ const wrap = (chars, perLine) => Math.max(1, Math.ceil(chars / Math.max(8, perLi
 const plain = (s) => s.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_`~]/g, '').replace(/<[^>]+>/g, '');
 
 const TABLE_RULE = /^\s*\|?[\s:|-]+\|?\s*$/;
-// A button's definition (`[^➕]: hemlock:…`, `[^↩sam]: [Reply](hemlock:…)`; lib/buttons.js), drawn as
+// A button's definition (`[^➕]: app:…`, `[^↩sam]: [Reply](app:…)`; lib/buttons.js), drawn as
 // nothing: a label from a symbol up (U+2000, as wide() reads one), then a URI with a scheme. Height.swift's alike.
 function button(l) {
   const m = /^ {0,3}\[\^([^[\]\s]+)\]:[ \t]*/.exec(l);
@@ -3560,7 +3564,7 @@ function read(markdown) {
   const plainLines = plain.split('\n');
   let env = {};
   let tokens = markdown === '' ? [] : md.parse(plain, env);
-  // Buttons' definitions (`[^↩sam]: [Reply](hemlock:…)`, lib/buttons.js)
+  // Buttons' definitions (`[^↩sam]: [Reply](app:…)`, lib/buttons.js)
   // are the file's, as link reference definitions are: the parser is
   // shown each as one (`[^↩sam]: #`), so it makes no block and is the
   // block before's, and its href is the button's, below. A definition
@@ -5097,8 +5101,7 @@ module.exports = { diffCards, applyEdits, texts };
 },
 "./motion": function (module, exports, require) {
 /**
- * Motion: how a change arrives (hemlockos specs/motion.md, taken upstream
- * 10-14). The motion vocabulary is the edit vocabulary: every change to a
+ * Motion: how a change arrives. The motion vocabulary is the edit vocabulary: every change to a
  * file is cards.md's own edits (diffCards), so each is an event whose
  * start and end are known before it is drawn. Here, the pure half, the
  * same for every renderer: the Motion table read, an event resolved to
@@ -5306,7 +5309,7 @@ function events(before, after, { author } = {}) {
   return out.map(({ kind, id, ...rest }) => ({ kind, was: id.was, card: kind === 'remove' ? null : ids.indexOf(id), ...rest, ...by }));
 }
 
-// Five to start from (hemlockos lab/motion.js, 10-13): a preset is its rows.
+// Five to start from: a preset is its rows.
 // Some rows are a host's events (chat, step, cheer, board, page, error),
 // resolved where the host names them in its tree.
 const PRESETS = {
@@ -6389,10 +6392,12 @@ const back = (label) => `cards-fnref-${label}`;
  *   `fields`: each row's field, by group and key (lib/fields.js);
  *   `roles`: a button's role, `main` or `caution`, by its URI or a prefix of it (lib/roles.js);
  *   `now`: the person's now, `2026-10-20 07:30`, for a date's year shown where it is not this one (the clock's, unsaid);
- *   `timeInput`: how a time is set, `halves` (unsaid) or `dial` (lib/turns.js), the person's choice, given by the host
+ *   `timeInput`: how a time is set, `halves` (unsaid) or `dial` (lib/turns.js), the person's choice, given by the host;
+ *   `width`: the card's width in CSS px, for a page that knows it: each picture drawn at it, its words unscaled
+ *   (lib/pictures.js); unsaid, on the 320 plane the stylesheet scales
  * @returns {string} the stack as HTML
  */
-function render(markdown, { choices, secrets, actions, images, colours, buffer, fields, roles, now, timeInput } = {}, outer = null) {
+function render(markdown, { choices, secrets, actions, images, colours, buffer, fields, roles, now, timeInput, width } = {}, outer = null) {
   const st = outer ? within(stack(markdown), outer) : stack(markdown);
   const today = (V.momentOf(now || clock()) || V.momentOf(clock())).day;
   const { cards, groups, footnotes = {} } = st;
@@ -6454,7 +6459,8 @@ function render(markdown, { choices, secrets, actions, images, colours, buffer, 
   // rows were read from a markdown block, verbatim when read from code.
   // A row drawn by its field (lib/fields.js): its type (`data-field`), its
   // description under its key; a row the file does not write (`r.lines` none),
-  // faint, says its key and the row it would follow.
+  // faint, says its key and the row it would follow. A bare field's row drawn
+  // as a control (`data-bare`) draws no key: the control's label says it.
   const row = (r, verbatim, { choice, secret, field: f, words: kind, turn, span, inside } = {}, acts, bs, fs) => {
     // a span's ends row: drawn inside its span, never as a row of its own
     if (inside) return '';
@@ -6473,11 +6479,12 @@ function render(markdown, { choices, secrets, actions, images, colours, buffer, 
     const body = !r.body ? '' : verbatim ? `<pre>${esc(r.body)}</pre>` : markup(unpressed(r.body, bs, fs) + (fs ? fs.map((l) => `[^${l}]`).join('') : ''));
     const as = (secret ? ' cards-secret' : choice || turn === 'many' ? ' cards-choice' : turn ? ` cards-turn-row${turn === 'slider' ? ' cards-scrub' : ''}` : text ? ' cards-text' : '') + (acts && acts.opens ? ' cards-opens' : '') + (r.lines ? '' : ' cards-unwritten');
     const where = r.lines ? at(r) : ` data-key="${esc(r.key)}" data-after="${r.after}"`;
-    const flags = f && f.type ? ` data-field="${f.type}"` : '';
+    const bare = Boolean(f && f.bare && (choice || turn));
+    const flags = (f && f.type ? ` data-field="${f.type}"` : '') + (bare ? ' data-bare=""' : '');
     const hint = kind && kind !== 'text' && !text && !choice && !secret && !turn ? ` inputmode="${kind}"` : '';
     const about = f && f.description ? `<span class="cards-description"${f.tone === 'caution' ? ' data-tone="caution"' : ''}>${esc(f.description)}</span>` : '';
     const after = (r.body ? '' : chips(bs, roles)) + (!acts ? '' : acts.buttons.map(button).join('') + (acts.opens ? '<span class="cards-opens-mark" aria-hidden="true">›</span>' : ''));
-    return `<div class="cards-row${long}${as}${toClass(r)}"${where}${to(r)}${flags}${acts && acts.opens ? ' data-opens=""' : ''}>${r.key ? `<dt>${esc(r.key)}${about}</dt>` : ''}<dd${hint}>${value}${after}${body}${r.body ? chips(bs, roles) : ''}</dd></div>`;
+    return `<div class="cards-row${long}${as}${toClass(r)}"${where}${to(r)}${flags}${acts && acts.opens ? ' data-opens=""' : ''}>${r.key && !bare ? `<dt>${esc(r.key)}${about}</dt>` : ''}<dd${hint}>${value}${after}${body}${r.body ? chips(bs, roles) : ''}</dd></div>`;
   };
   // a button the host does: its name, what a tap says (`data-action`)
   const button = (b) => `<button type="button" class="cards-action${b.destructive ? ' cards-action-destructive' : ''}" data-action="${esc(b.name)}">${esc(b.name)}</button>`;
@@ -6755,7 +6762,7 @@ function render(markdown, { choices, secrets, actions, images, colours, buffer, 
         const { type, written, title, markdown: body, card } = b.callout;
         const from = b.lines[0] + b.markdown.split('\n').length - body.split('\n').length;
         // A card its drawer draws: the picture, its title over it; else the callout, as any
-        const drawn = card ? draw(card, title, { ...(images ? { images } : {}), ...(colours ? { colours } : {}) }) : null;
+        const drawn = card ? draw(card, title, { ...(images ? { images } : {}), ...(colours ? { colours } : {}), ...(width > 0 ? { width } : {}) }) : null;
         if (drawn !== null) return `<div ${cls('cards-picture')} data-picture="${esc(card.type)}">${title && card.type !== 'viewinfo' ? `<p class="cards-callout-label">${inline(title)}</p>` : ''}${drawn}</div>`;
         const label = title || written;
         const step = STEP.test(type);
@@ -9477,8 +9484,8 @@ globalThis.cardsCall = function (json) {
 </script>
 <script>// Motion, played on the web (SPEC.md, "A change, shown as it happens"):
 // the events lib/motion.js says, each resolved from the person's Motion
-// table, played with the Web Animations API on the cards just drawn.
-// Ported from hemlockos's lab (lab/motion.js), kept to what the stack
+// table, played with the Web Animations API on the cards just drawn,
+// kept to what the stack
 // needs: a card entering, a card leaving (its ghost, where it stood),
 // cards kept sliding from where they were (FLIP), words crossing, a
 // strike drawn, and glow, rim, hold and shake. Nothing moves when idle,
@@ -9854,7 +9861,7 @@ pixels.
 
   /** A shipped theme (lib/themes.json) as a palette: its sixteen, background and foreground. */
   const paletteOf = (t) => ({ ansi: t.palette.map((c) => c.toUpperCase()), background: t.background.toUpperCase(), foreground: t.foreground.toUpperCase() });
-  // a colour's hue (0-360) and saturation, as HSL reads them (brand's palette.js)
+  // a colour's hue (0-360) and saturation, as HSL reads them
   const hueSat = (c) => {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16) / 255);
     const M = Math.max(r, g, b), m = Math.min(r, g, b), d = M - m, l = (M + m) / 2;
@@ -9864,9 +9871,9 @@ pixels.
   };
   const hueGap = (x, y) => { const d = Math.abs(hueSat(x).h - hueSat(y).h) % 360; return Math.min(d, 360 - d); };
   /** A shipped theme's colours as a choice's tile shows them, what matters first (a tile shows its first
-   *  four unless told), as brand orders them: its background, foreground, the stone (the accent cards.md
+   *  four unless told): its background, foreground, the stone (the accent cards.md
    *  picks for it, else, where none or a grey, its yellow), the stone's partner (of its colours with some saturation, the one
-   *  furthest round the wheel from the stone; brand's palette.js partner()), then the rest of its palette. */
+   *  furthest round the wheel from the stone), then the rest of its palette. */
   const themeColours = (t) => {
     // the accent cards.md picks, unless none or its fallback, a grey: then its yellow
     const accent = scheme(paletteOf(t), t.dark ? 'Dark' : 'Light').colours.accent;
@@ -10151,7 +10158,7 @@ pixels.
     }
     return Object.fromEntries(Object.keys(MEANS).sort().map((k) => [k, out[k]]));
   }
-  /** A scheme's accent, apart from its pictures' six (placescope, 10-16: a map's places read as transit where it was the blue). */
+  /** A scheme's accent, apart from its pictures' six (10-16: a map's places read as transit where it was the blue). */
   function accentOf(p, out, under, fg) {
     const six = [1, 2, 3, 4, 5, 6].map((i) => out[`series-${i}`]).filter(Boolean);
     const far = (c) => Math.min(...six.map((x) => apart(x, c)));
