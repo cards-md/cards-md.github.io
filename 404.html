@@ -363,6 +363,19 @@
 .cards-scrub .cards-turn { touch-action: pan-y; }
 .cards-turn-fill { position: absolute; left: 0; bottom: 0; width: var(--fill, 0%); height: 2px; border-radius: 1px; background: var(--cards-ink3); opacity: 0.35; pointer-events: none; }
 .cards-scrub.cards-turn-live .cards-turn-fill { background: var(--cards-accent); opacity: 1; height: 3px; }
+/* a bare slider (L8): its track alone across the card, a fill to the value and a knob on it; the value at the
+   left under it and what is left at the right, quiet, in the small mono */
+.cards-turn[data-bare] { display: block; width: 100%; height: auto; padding: 8px 0 0; }
+.cards-turn[data-bare]::before { content: none; }
+.cards-turn[data-bare]:focus-visible { outline: 2px solid var(--cards-accent); outline-offset: 4px; border-radius: 6px; }
+.cards-slider-track { position: relative; display: block; height: 4px; border-radius: 2px; background: var(--cards-hair); }
+.cards-slider-track .cards-turn-fill { top: 0; height: 100%; border-radius: 2px; background: var(--cards-accent); opacity: 1; }
+.cards-scrub.cards-turn-live .cards-slider-track .cards-turn-fill { height: 100%; }
+.cards-slider-knob { position: absolute; top: 50%; left: var(--fill, 0%); width: 14px; height: 14px; border-radius: 50%; background: var(--cards-accent);
+  transform: translate(-50%, -50%); pointer-events: none; }
+.cards-slider-ends { display: flex; justify-content: space-between; margin-top: 6px;
+  font: var(--cards-mono-weight) var(--cards-quiet-size)/var(--cards-quiet-line) var(--cards-mono); color: var(--cards-ink3); font-variant-numeric: tabular-nums; }
+.cards-slider-ends .cards-turn-words { min-width: 0; text-align: left; color: inherit; font-weight: inherit; }
 .cards-turn-big { position: absolute; left: 50%; bottom: calc(100% - 6px); transform: translateX(-50%); z-index: 5; pointer-events: none;
   font: 700 44px/1 var(--cards-sans); font-variant-numeric: tabular-nums; color: var(--cards-accent);
   background: var(--cards-card); border-radius: 14px; padding: 8px 16px; box-shadow: 0 0 0 var(--cards-hairline) var(--cards-hair), 0 8px 24px color-mix(in srgb, var(--cards-ink) 18%, transparent); }
@@ -2034,6 +2047,42 @@ function scrub(base, dx, width, min, max, step) {
   return snap(base + Math.round(dx / px) * s, min, max, s);
 }
 
+// --- durations ------------------------------------------------------------------
+
+// elapsed time as written: M:SS under an hour (minutes 0 to 59), H:MM:SS from one
+const DURATION = /^(?:(\d+):([0-5]\d)|(\d{1,2})):([0-5]\d)$/;
+
+/**
+ * Elapsed time as written, in seconds: `31:12` (M:SS, minutes 0 to 59) or
+ * `1:12:04` (H:MM:SS); anything else null (`72:04` is written `1:12:04`;
+ * no sign). Never a time of day: a field's bounds say it is a duration.
+ * @param {string} text
+ * @returns {number|null}
+ */
+function durationOf(text) {
+  const m = DURATION.exec(String(text ?? '').trim());
+  if (!m) return null;
+  if (m[3] !== undefined) {
+    if (Number(m[3]) > 59) return null;
+    return Number(m[3]) * 60 + Number(m[4]);
+  }
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[4]);
+}
+
+/**
+ * Seconds written as elapsed time: M:SS under an hour, H:MM:SS from one;
+ * below nought with a leading − (U+2212), never −0:00.
+ * @param {number} seconds whole seconds (rounded)
+ * @returns {string}
+ */
+function durationText(seconds) {
+  const s = zero(Math.round(seconds));
+  if (s < 0) return `−${durationText(-s)}`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${p2(m)}:${p2(s % 60)}` : `${m}:${p2(s % 60)}`;
+}
+
 // --- dates and times ---------------------------------------------------------
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?$/;
@@ -2281,7 +2330,7 @@ function manyLabel(chosen) {
 }
 
 module.exports = {
-  VALUES, dragSteps, rollSteps, wound, dialMinutes, snap, scrub,
+  VALUES, dragSteps, rollSteps, wound, dialMinutes, snap, scrub, durationOf, durationText,
   momentOf, dateText, timeText, momentText, later, nextComing, dateLabel, weekday, monday,
   spanDrawing, spanFilled, lengthLabel, daysLabel,
   unitsOf, decimalsOf, numberText, placesOf,
@@ -2415,7 +2464,7 @@ const { sectionOf, rowChoice, choiceOf, coloursOf, showOf } = require('./choices
 const { rowSecret } = require('./secrets');
 const { editRows } = require('./edits');
 const { stack } = require('./stack');
-const { spanDrawing, unitsOf, decimalsOf } = require('./values');
+const { spanDrawing, unitsOf, decimalsOf, durationOf } = require('./values');
 
 const TYPES = ['choice', 'toggle', 'number', 'date', 'time', 'span', 'many', 'slider', 'text', 'secret'];
 // the types whose value is words, and the keyboard each asks for
@@ -2467,6 +2516,13 @@ function fieldOf(given) {
   if (about) { out.description = about.text; if (about.tone) out.tone = about.tone; }
   // a number's, a slider's and a time's: bounds, places and step; a span's: its other key, and how a new one is drawn
   for (const k of ['min', 'max', 'step']) if (typeof given[k] === 'number' && Number.isFinite(given[k]) && (k !== 'step' || given[k] > 0)) out[k] = given[k];
+  // a slider whose bounds are written as durations (`0:00`, `1:12:04`): a duration slider, its bounds in
+  // seconds, as its step is; never a time of day, whatever its words look like
+  if (out.type === 'slider' && durationOf(given.min) !== null && durationOf(given.max) !== null) {
+    out.min = durationOf(given.min);
+    out.max = durationOf(given.max);
+    out.duration = true;
+  }
   if (Number.isInteger(given.decimals) && given.decimals >= 0 && given.decimals <= 6) out.decimals = given.decimals;
   if (out.type === 'span' && typeof given.ends === 'string' && given.ends.trim()) out.ends = given.ends.trim();
   if (out.type === 'span' && (given.span === 'day' || given.span === 'days')) out.span = given.span;
@@ -2496,8 +2552,9 @@ function spansIn(section) {
  * Row `row` of card `c`'s field, or null when the map names none.
  * @param {{cards: Array, groups: Array}} st a stack
  * @param {Object<string, Object<string, Object>>|undefined} fields
- * @returns {{type?: string, values?: Array<string|{value: string, colours: string[]}>, closed?: true, show?: number|'all', default?: string, description?: string, tone?: 'caution', bare?: true}|null}
- *   (a description given as `{text, tone}` comes back flat: its words `description`, and `tone` only when caution)
+ * @returns {{type?: string, values?: Array<string|{value: string, colours: string[]}>, closed?: true, show?: number|'all', default?: string, description?: string, tone?: 'caution', bare?: true, min?: number, max?: number, step?: number, duration?: true}|null}
+ *   (a slider's bounds written as durations, `0:00` to `1:12:04`, come back in seconds with `duration: true`;
+ *   a description given as `{text, tone}` comes back flat: its words `description`, and `tone` only when caution)
  */
 function rowField(st, fields, c, row) {
   const at = fields && cardOf(st, c);
@@ -6657,13 +6714,23 @@ function render(markdown, { choices, secrets, actions, images, colours, buffer, 
       return `${head(attrs, `${r.key}: ${r.value || 'none'}`, 'spinbutton')}<span class="cards-turn-digits${!fits && !r.value.trim() ? ' cards-turn-choose' : ''}"${fits || !r.value.trim() ? '' : ' hidden'}>${digits}</span>${words}<input class="cards-odometer-type" type="text" inputmode="numeric" tabindex="-1" autocomplete="off" enterkeyhint="done" aria-label="${esc(r.key)}"></span>`;
     }
     if (turn === 'slider') {
-      const dec = V.decimalsOf(f.decimals, f.step !== undefined ? String(f.step) : r.value);
-      const units = V.unitsOf(r.value, dec);
+      // a duration slider's words are elapsed time (`31:12`), its numbers seconds; else digits
+      const dec = f.duration ? 0 : V.decimalsOf(f.decimals, f.step !== undefined ? String(f.step) : r.value);
+      const units = f.duration ? V.durationOf(r.value) : V.unitsOf(r.value, dec);
       const v = units === null ? null : units / 10 ** dec;
-      const text = (x) => V.numberText(Math.round(x * 10 ** dec), dec);
+      const text = (x) => (f.duration ? V.durationText(x) : V.numberText(Math.round(x * 10 ** dec), dec));
       const size = [text(f.min), text(f.max)].sort((x, y) => y.length - x.length)[0];
       const fill = v === null ? 0 : ((Math.min(f.max, Math.max(f.min, v)) - f.min) / (f.max - f.min)) * 100;
-      const attrs = ` data-value="${v === null ? '' : esc(r.value.trim())}" data-min="${f.min}" data-max="${f.max}" data-decimals="${dec}" aria-valuemin="${f.min}" aria-valuemax="${f.max}"${v === null ? '' : ` aria-valuenow="${esc(r.value.trim())}"`}`;
+      const attrs = ` data-value="${v === null ? '' : esc(r.value.trim())}" data-min="${f.min}" data-max="${f.max}" data-decimals="${dec}"${f.duration ? ' data-duration=""' : ''} aria-valuemin="${f.min}" aria-valuemax="${f.max}"${v === null ? '' : ` aria-valuenow="${f.duration ? v : esc(r.value.trim())}"${f.duration ? ` aria-valuetext="${esc(r.value.trim())}"` : ''}`}`;
+      const fillOf = (cls) => `<i class="${cls}" style="--fill: ${+fill.toFixed(3)}%" aria-hidden="true"></i>`;
+      // bare (L8): its track alone, the card's width, a fill to the value and a knob on it; under it the
+      // value at the left and what is left at the right (max − value, written as the value is)
+      if (f.bare) {
+        const rest = v === null ? null : f.max - Math.min(f.max, Math.max(f.min, v));
+        const left = rest === null ? '' : `${rest > 0 ? '−' : ''}${text(rest)}`;
+        return `${head(`${attrs} data-bare=""`, `${r.key}: ${r.value || 'Choose'}`, 'slider')}<span class="cards-slider-track">${fillOf('cards-turn-fill')}${fillOf('cards-slider-knob')}</span>`
+          + `<span class="cards-slider-ends"><span class="cards-turn-words">${v === null ? as(r) : esc(r.value.trim())}</span><span class="cards-slider-left">${esc(left)}</span></span></span>`;
+      }
       return `${head(attrs, `${r.key}: ${r.value || 'Choose'}`, 'slider')}${tstep(-1, v !== null && v <= f.min)}<span class="cards-turn-words" data-size="${esc(size)}">${v === null ? as(r) : esc(r.value.trim())}</span>${tstep(1, v !== null && v >= f.max)}</span><i class="cards-turn-fill" style="--fill: ${+fill.toFixed(3)}%" aria-hidden="true"></i>`;
     }
     // many of many: the select's chip, the chosen ones in the list's order, then how many more
@@ -7016,7 +7083,8 @@ globalThis.cardsCall = function (json) {
 <script>// The select, alive in a browser (SPEC.md, "A row drawn as a choice"):
 // the chip html() draws (`.cards-select`, ‹ value ›) stepped by a tap on
 // an arrow, a sideways swipe or a key, and the wheel it opens by a tap on
-// its words, a hold or a swipe up or down. This is a port of the
+// its words, a hold or a swipe up or down (the last two take where the
+// finger lets go and the wheel comes to rest). This is a port of the
 // select's prototype; the numbers are
 // lib/wheel.js's, from the bundle, so the web and the phones turn alike.
 //
@@ -7186,7 +7254,8 @@ globalThis.cardsCall = function (json) {
       return;
     }
     if ('many' in el.dataset && mode === 'h') return;
-    if (mode === '?') { if (d) step(el, d); else open(el); } else if (mode === 'h') { if (to !== base) take(el, valuesOf(el)[to].dataset.value); } else if (mode === 'hold') dragEnd(W.moved); else dragEnd(false); // hold, drag, let go: taken
+    // a hold dragged, or a swipe up or down, then let go: taken where it comes to rest, in one stroke
+    if (mode === '?') { if (d) step(el, d); else open(el); } else if (mode === 'h') { if (to !== base) take(el, valuesOf(el)[to].dataset.value); } else if (mode === 'hold') dragEnd(W.moved); else dragEnd(!W.multi);
   };
   doc.addEventListener('pointerup', end, true);
   doc.addEventListener('pointercancel', end, true);
@@ -7230,7 +7299,7 @@ globalThis.cardsCall = function (json) {
 
   // --- the wheel -------------------------------------------------------------
 
-  const W = { on: false, closing: false, el: null, items: [], pos: 0, p: 0, sx: 0, pa: null, sa: null, d: null, g: null, moved: false, lastTick: 0, inAt: -1, values: 0 };
+  const W = { on: false, closing: false, el: null, items: [], pos: 0, p: 0, sx: 0, pa: null, sa: null, d: null, g: null, moved: false, lastTick: 0, inAt: -1, values: 0, start: 0 };
   let wheel = null;
   let lens = null;
   let list = null;
@@ -7369,7 +7438,7 @@ globalThis.cardsCall = function (json) {
       list.appendChild(it);
       return it;
     });
-    W.pos = multi ? (W.ticks.size ? Math.min(...W.ticks) : 0) : Math.max(now, 0); W.lastTick = W.pos; W.inAt = -1; W.p = 0;
+    W.pos = multi ? (W.ticks.size ? Math.min(...W.ticks) : 0) : Math.max(now, 0); W.start = W.pos; W.lastTick = W.pos; W.inAt = -1; W.p = 0;
     list.setAttribute('aria-label', keyOf(el));
     list.setAttribute('aria-multiselectable', String(multi));
     wheel.classList.toggle('cards-wheel-multi', multi);
@@ -7446,8 +7515,15 @@ globalThis.cardsCall = function (json) {
       const b = d.s[d.s.length - 1];
       if (performance.now() - b[0] < 60 && b[0] > a[0]) v = -(b[1] - a[1]) / (b[0] - a[0]) / K.ITEM_H;
     }
-    if (takeIt) { pick(Math.round(W.pos)); return; }
-    scrollTo(reduced() ? W.pos : W.pos + v * K.TAU, K.TAU);
+    // many of many: a hold dragged ticks the one under the lens, and the wheel stays
+    if (takeIt && W.multi) { pick(Math.round(W.pos)); return; }
+    const to = reduced() ? W.pos : W.pos + v * K.TAU;
+    if (!takeIt) { scrollTo(to, K.TAU); return; }
+    // A let-go that takes (a hold dragged, a swipe up or down from the chip): it
+    // coasts as any let-go does, and where it comes to rest is taken. Come to rest
+    // where the wheel opened, it closes taking nothing; on New…, it stays open there.
+    const rest = clamp(Math.round(to), 0, W.items.length - 1);
+    scrollTo(to, v ? K.TAU : K.TAU_PICK, rest >= W.lead + W.values ? null : () => close(rest === W.start ? null : rest));
   }
   // is there a packed choice at least this far out on that side?
   function hasQueueAt(dir, dy) {
@@ -7778,24 +7854,33 @@ globalThis.cardsCall = function (json) {
   // --- the slider: the scrub (L1–L7) -------------------------------------------
 
   const sl = (el) => ({ min: Number(el.dataset.min), max: Number(el.dataset.max), step: Number(el.dataset.step) || 1, dec: Number(el.dataset.decimals) || 0 });
-  const sliderOf = (el) => { const v = Number(el.dataset.value); return el.dataset.value !== '' && Number.isFinite(v) ? v : null; };
+  // a duration slider's words are elapsed time (`31:12`), its numbers seconds (L9)
+  const during = (el) => 'duration' in el.dataset;
+  const sliderOf = (el) => {
+    if (during(el)) return lib.durationOf(el.dataset.value);
+    const v = Number(el.dataset.value);
+    return el.dataset.value !== '' && Number.isFinite(v) ? v : null;
+  };
   function showSlider(el, v, dir) {
     plain(el);
-    const { min, max, dec } = sl(el);
-    const text = lib.numberText(Math.round(v * 10 ** dec), dec);
+    const { min, max } = sl(el);
+    const text = sliderText(el, v);
     el.dataset.value = text;
     words(el).textContent = text;
     const row = el.closest('.cards-row');
-    const fill = row && row.querySelector('.cards-turn-fill');
-    if (fill) fill.style.setProperty('--fill', `${((clamp(v, min, max) - min) / (max - min)) * 100}%`);
+    const at = `${((clamp(v, min, max) - min) / (max - min)) * 100}%`;
+    for (const i of row ? row.querySelectorAll('.cards-turn-fill, .cards-slider-knob') : []) i.style.setProperty('--fill', at);
+    // a bare slider's right end: what is left, written as the value is
+    const left = el.querySelector('.cards-slider-left');
+    if (left) { const rest = max - clamp(v, min, max); left.textContent = `${rest > 0 ? '−' : ''}${sliderText(el, rest)}`; }
     const [back, on] = el.querySelectorAll(':scope > .cards-turn-step');
     if (back) { if (v <= min) back.setAttribute('aria-disabled', 'true'); else back.removeAttribute('aria-disabled'); }
     if (on) { if (v >= max) on.setAttribute('aria-disabled', 'true'); else on.removeAttribute('aria-disabled'); }
-    el.setAttribute('aria-valuenow', text);
+    el.setAttribute('aria-valuenow', during(el) ? String(clamp(v, min, max)) : text);
     el.setAttribute('aria-valuetext', text);
     slide(words(el), dir);
   }
-  const sliderText = (el, v) => { const { dec } = sl(el); return lib.numberText(Math.round(v * 10 ** dec), dec); };
+  const sliderText = (el, v) => { const { dec } = sl(el); return during(el) ? lib.durationText(v) : lib.numberText(Math.round(v * 10 ** dec), dec); };
   const sliderBase = (el) => { const { min, max, step } = sl(el); const v = sliderOf(el); return lib.snap(v === null ? min : v, min, max, step); };
 
   // --- what a step does, by type -------------------------------------------------
@@ -8181,6 +8266,7 @@ globalThis.cardsCall = function (json) {
     box.className = 'cards-select-new cards-turn-type';
     box.innerHTML = '<input type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false"><button type="button" class="cards-select-cancel" aria-label="Cancel">✕</button><button type="button" class="cards-select-done">Done</button>';
     const input = box.querySelector('input');
+    if (during(el)) input.inputMode = 'text'; // `31:12` needs its colon
     input.setAttribute('aria-label', keyOf(el));
     input.value = el.dataset.value || '';
     box._turn = el;
@@ -8195,7 +8281,7 @@ globalThis.cardsCall = function (json) {
     box.remove();
     el.hidden = false;
     const { min, max, dec } = sl(el);
-    const v = Number(raw);
+    const v = during(el) ? lib.durationOf(raw) ?? NaN : Number(raw);
     if (!keep || raw === '' || !Number.isFinite(v)) { el.focus({ preventScroll: true }); return; }
     const kept = clamp(Math.round(v * 10 ** dec) / 10 ** dec, min, max);
     showSlider(el, kept, 0);
