@@ -1897,6 +1897,7 @@ const VALUES = Object.freeze({
   SPAN_STEP: 15, // a span's, the same
   SPAN_LENGTH: 60, // a new span on a day, in minutes
   SHOWN: 2, // many of many: the chosen shown at rest, before "+n"
+  DIAL_DEAD: 26, // the time's dial: a finger this near its middle turns nothing
 });
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1930,6 +1931,30 @@ function dragSteps(dx, small, big) {
  * @param {number} dy pixels the finger has moved since it came down (down positive)
  */
 const rollSteps = (dy) => zero(Math.round(-dy / VALUES.ROLL_PX));
+
+/**
+ * How far a finger has wound the time's dial since its last angle: the
+ * change the short way round, so a turn past the dial's left (where the
+ * angle leaps from π to −π) counts on, not back.
+ * @param {number} last the last angle, radians (Math.atan2's, −π..π)
+ * @param {number} angle the angle now, the same
+ * @returns {number} the signed change, radians, −π..π
+ */
+function wound(last, angle) {
+  let d = angle - last;
+  if (d > Math.PI) d -= 2 * Math.PI;
+  if (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
+
+/**
+ * The minutes a winding of the dial moves its time: a whole turn an hour,
+ * snapped to the step. The time is then the time it began at, later by
+ * these (a dated time carries its day across midnight; a time alone wraps).
+ * @param {number} turns the winding so far, in whole turns (clockwise positive)
+ * @param {number} step the time's step, in minutes
+ */
+const dialMinutes = (turns, step) => zero(Math.round(turns * 60 / step) * step);
 
 /**
  * A value set to the slider's step from its least, within its bounds.
@@ -2201,7 +2226,7 @@ function manyLabel(chosen) {
 }
 
 module.exports = {
-  VALUES, dragSteps, rollSteps, snap, scrub,
+  VALUES, dragSteps, rollSteps, wound, dialMinutes, snap, scrub,
   momentOf, dateText, timeText, momentText, later, nextComing, dateLabel, weekday, monday,
   spanDrawing, spanFilled, lengthLabel, daysLabel,
   unitsOf, decimalsOf, numberText, placesOf,
@@ -2575,7 +2600,7 @@ function spanAll(st, fields, c, key) {
   return { key, ends: span.ends, row, endsRow: at.block.rows.findIndex((r) => r.key === span.ends) };
 }
 
-module.exports = { rowField, unwritten, rowDrawn, spanAt, writeSpan, TYPES };
+module.exports = { rowField, unwritten, rowDrawn, turnOf, spanAt, writeSpan, TYPES };
 
 },
 "./buffers": function (module, exports, require) {
@@ -8395,12 +8420,11 @@ globalThis.cardsCall = function (json) {
     if (P.kind !== 'dial') return;
     const x = e.clientX - P.c.x;
     const y = e.clientY - P.c.y;
-    if (Math.hypot(x, y) < 26) { P.last = null; return; }
+    if (Math.hypot(x, y) < V.DIAL_DEAD) { P.last = null; return; }
     const a = Math.atan2(y, x);
-    if (P.last !== null) { let d = a - P.last; if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI; P.a0 += d; }
+    if (P.last !== null) P.a0 += lib.wound(P.last, a);
     P.last = a;
-    const st = stepOf(P.el, V.TIME_STEP);
-    const k = Math.round(P.a0 / (2 * Math.PI) * 60 / st) * st;
+    const k = lib.dialMinutes(P.a0 / (2 * Math.PI), stepOf(P.el, V.TIME_STEP));
     const m = timePlus(P.base, k);
     if (m.minutes !== P.m.minutes || m.day !== P.m.day) { P.m = m; buzz(); showTime(P.el, m, 0); paintDial(); }
   }
