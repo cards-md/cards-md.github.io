@@ -946,6 +946,18 @@ button { cursor: pointer; }
 .cards-stack .cards-card.editor { cursor: default; }
 /* (dimming the rest is the editors' own: proto/editors.css) */
 .cards-stack.is-editing .record-more { opacity: var(--cards-edit-dim-others); }
+/* a folder's front page ends with its file's name, quiet, in the small mono: the way to the file itself */
+.cards-stack .front-file { align-self: flex-start; margin: 0; padding: 0 var(--cards-inset); border: none; background: none; cursor: pointer;
+  font: var(--cards-mono-weight) var(--cards-quiet-size)/var(--cards-quiet-line) var(--cards-mono); color: var(--cards-ink3); }
+/* a file not opened as cards: a PDF in the browser's viewer, as tall as a page; a sound's player across its card */
+/* a text file's lines, each under its number in ink3; a long line wraps beside its one number */
+.text-lines { counter-reset: line; }
+.text-lines span { display: flex; counter-increment: line; }
+.text-lines span::before { content: counter(line); flex: none; min-width: calc(var(--digits) * 1ch); padding-right: 2ch;
+  text-align: right; color: var(--cards-ink3); user-select: none; }
+.cards-pdf { padding: 0; }
+.cards-pdf iframe { display: block; width: 100%; height: 75vh; border: none; }
+.cards-stack audio { display: block; width: 100%; }
 .lit { animation: lit 1.6s ease-out; }
 @keyframes lit { from { box-shadow: 0 0 0 3px var(--focus); } to { box-shadow: 0 0 0 3px transparent; } }
 @media (prefers-reduced-motion: reduce) { .lit { animation: none; } .cards-card { transition: none; } }
@@ -8470,7 +8482,42 @@ globalThis.cardsCall = function (json) {
     return { rows: [...dirs, ...files.filter((e) => e !== readme)], front: readme ? readme.path : null };
   }
 
-  return { linked, raw, listing, hidden, HIDDEN };
+  // The kinds named by extension (vectors/files-open.json), case set
+  // aside; the binary others by name alone. Any other file, an extension
+  // or none, is judged by its bytes.
+  const KINDS = {
+    cards: ['md'],
+    text: ['txt', 'json', 'csv', 'js', 'swift', 'kt', 'py', 'sh', 'yml', 'toml', 'markdown'],
+    image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic'],
+    pdf: ['pdf'],
+    player: ['mp3', 'm4a', 'm4b', 'aac', 'wav', 'flac', 'ogg', 'opus'],
+    other: ['zip', 'apk', 'bin'],
+  };
+  const BY_EXTENSION = new Map(Object.entries(KINDS).flatMap(([kind, exts]) => exts.map((x) => [x, kind])));
+
+  /** A file's extension, lowercased: what follows its name's last `.`,
+   *  where the dot is not the name's first letter; '' where there is none. */
+  function extension(name) {
+    const base = name.split('/').pop();
+    const dot = base.lastIndexOf('.');
+    return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+  }
+
+  /** The kind the file's extension names, or null: its bytes decide. */
+  const named = (name) => BY_EXTENSION.get(extension(name)) || null;
+
+  /** What a tap on the file `name` opens (vectors/files-open.json):
+   *  'cards' | 'text' | 'image' | 'pdf' | 'player' | 'other'. By its
+   *  extension where KINDS names it; else by its `bytes` (a Uint8Array):
+   *  text when they read as UTF-8, else other (no bytes given, other). */
+  function opens(name, bytes) {
+    const kind = named(name);
+    if (kind) return kind;
+    if (!bytes) return 'other';
+    try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); return 'text'; } catch { return 'other'; }
+  }
+
+  return { linked, raw, listing, hidden, HIDDEN, opens, named, extension, KINDS };
 }));
 </script>
 <script>// The editors, one per card kind: each takes the stack and a card's
@@ -10227,6 +10274,7 @@ pixels.
 //   read(path)             { text, version }
 //   write(path, text, version)   { version } | { conflict: true } | { error }; none where read-only
 //   raw(path)              the URL an image or another file is drawn from
+//   pdf(path)              the URL the browser's own viewer opens a PDF from, where raw's is not one; else raw's
 //   settings               { where, load(), save(draft, version) }: the panel's (settings.js's answer)
 //   start                  the file to open first, if any; opened(path), told as each opens
 //
@@ -10413,6 +10461,8 @@ pixels.
         return { text, version: versionOf(text) };
       },
       raw,
+      // raw.githubusercontent.com gives a PDF as bytes alone, which the browser downloads; jsDelivr gives it as a PDF
+      pdf: (p) => `https://cdn.jsdelivr.net/gh/${base}@${enc(at.ref)}/${enc(p)}`,
       // the page's URL, as each file opens (the first, in the URL's place)
       opened(p, first) { go(`/${base}/blob/${enc(at.ref)}/${enc(p)}`, first); },
       settings: {
@@ -10445,7 +10495,7 @@ pixels.
   // from a source (proto/source.js): this machine's folder (proto/serve.js),
   // or a public GitHub repo, read only; else the bench's own samples.
   const served = document.getElementById('serve') ? JSON.parse(document.getElementById('serve').textContent) : null;
-  const { linked } = window.cardsPaths;
+  const { linked, opens, named, extension } = window.cardsPaths;
   const S = window.cardsSources;
   // the person's settings kept in this browser (a private window may keep nothing)
   const store = (() => { try { const t = window.localStorage; t.getItem('x'); return t; } catch { return null; } })();
@@ -10456,6 +10506,9 @@ pixels.
       : S.server({ folder: served.folder });
   // Nothing written back: a tap reads, and no card is edited
   const readOnly = !!served && !(source && source.write);
+  // Nothing on the page is edited: read only, a file not opened as cards
+  // (paths.js's opens), or a folder's front page, whose way in is its line
+  const reading = () => readOnly || !!(file() && (file().opens || file().front));
   // A path written in the file, as the source's URL for it: from the
   // file's own folder, as the markdown means it (proto/paths.js).
   function local(src) {
@@ -10573,6 +10626,7 @@ pixels.
       if (served) drawServed();
       return;
     }
+    if (file().opens) { drawFile(file()); return; }
     const st = lib.stack(file().source);
     const before = shown.file === file() && shown.source !== file().source && window.cardsMotion && stackHost.firstElementChild
       ? { source: shown.source, cards: window.cardsMotion.snapshot(stackHost.firstElementChild) } : null;
@@ -10580,7 +10634,7 @@ pixels.
     drawInputs();
     resolve(stackHost);
     const stackEl = stackHost.firstElementChild;
-    if (!st.cards.length && !readOnly && !buffer()) stackEl.append(el('button', { type: 'button', class: 'start', textContent: 'Tap to write' }));
+    if (!st.cards.length && !reading() && !buffer()) stackEl.append(el('button', { type: 'button', class: 'start', textContent: 'Tap to write' }));
     const cardEls = stackEl.querySelectorAll('.cards-card');
     cardEls.forEach((c, i) => { c.dataset.card = i; });
     drawPictures(st);
@@ -10589,7 +10643,7 @@ pixels.
     st.groups.forEach((g, gi) => {
       if (g.heading === null) return;
       const head = st.cards[g.heading].blocks[0];
-      if (!head.record || readOnly || buffer()) return;
+      if (!head.record || reading() || buffer()) return;
       const h = cardEls[g.heading];
       h.append(el('button', { type: 'button', class: 'record-more', title: `${head.record.key} actions`,
         ariaLabel: `${head.record.key} actions`, textContent: '···', data: { group: gi } }));
@@ -10601,6 +10655,12 @@ pixels.
         if (c.lines[0] < Math.max(changed[1], changed[0] + 1) && c.lines[1] > changed[0]) cardEls[i].classList.add('lit');
       });
     }
+    // A folder's front page ends with its file's name, quiet: the way to
+    // the file itself, to edit (an empty README.md draws this alone)
+    if (file().front) {
+      stackEl.append(el('button', { type: 'button', class: 'front-file', textContent: file().path.split('/').pop(),
+        title: `Open ${file().path}` }));
+    }
     if (before) window.cardsMotion.play(before.cards, stackEl, lib.motionEvents(before.source, file().source, { author }), motion, { author });
     shown = { file: file(), source: file().source };
     author = 'person';
@@ -10611,6 +10671,40 @@ pixels.
     undoButton.title = last ? `Undo: ${last.label}` : 'Nothing to undo';
     if (served) drawServed();
   }
+
+  // A file not opened as cards (paths.js's opens), drawn as its kind with
+  // the engine's own classes: text in the mono, read only; an image; a
+  // PDF in the browser's own viewer; a sound in its audio player; any
+  // other, its name, size and kind, and a link to the file itself. Text's
+  // lines are numbered, a long line wrapping under its one number.
+  function drawFile(f) {
+    const card = (kind, ...kids) => el('div', { class: `cards-card ${kind}` }, ...kids);
+    const name = f.path.split('/').pop();
+    const row = (key, value) => el('div', { class: 'cards-row' }, el('dt', { textContent: key }), el('dd', { textContent: value }));
+    const ext = extension(name);
+    // text's lines, each drawn under its number (a last newline ends a line, and starts none)
+    const lines = f.opens === 'text' ? f.text.replace(/\r?\n$/, '').split(/\r?\n/) : [];
+    const drawn = {
+      text: () => card('cards-code cards-front', el('pre', { class: 'text-lines', style: `--digits: ${String(lines.length).length}` },
+        lines.map((l) => el('span', { textContent: l })))),
+      image: () => card('cards-image', el('img', { src: f.url, alt: name })),
+      pdf: () => card('cards-html cards-pdf', el('iframe', { src: f.url, title: name })),
+      player: () => card('cards-html', el('audio', { src: f.url, controls: true, preload: 'metadata' })),
+      other: () => [
+        el('h1', { class: 'cards-card cards-heading', textContent: name }),
+        card('cards-list cards-rows', el('dl', {}, f.size === null ? null : row('Size', sizeOf(f.size)), row('Kind', ext ? `${ext.toUpperCase()} file` : 'File'))),
+        card('cards-prose', el('p', {}, el('a', { href: f.url, download: name, textContent: 'Download' }))),
+      ],
+    }[f.opens]();
+    stackHost.replaceChildren(el('div', { class: 'cards-stack', data: { opens: f.opens } }, el('section', { class: 'cards-group' }, drawn)));
+    shown = { file: f, source: null };
+    $('#source-lines').replaceChildren();
+    $('#source-count').textContent = '';
+    $('#undo').disabled = true;
+    drawInputs();
+    if (served) drawServed();
+  }
+  const sizeOf = (n) => (n < 1000 ? `${n} bytes` : n < 1e6 ? `${(n / 1e3).toFixed(1)} KB` : n < 1e9 ? `${(n / 1e6).toFixed(1)} MB` : `${(n / 1e9).toFixed(1)} GB`);
 
   // Pictures at their card's width: each of bars, a line or a grid drawn
   // as wide as pictures.js's widthFor says (the measure, or wider where it
@@ -11065,7 +11159,7 @@ pixels.
   // edit (setRow, or insertRow where the file does not write it), undone
   // as any other. The words a written row already has write nothing.
   stackHost.addEventListener('cards-select', (e) => {
-    if (readOnly || editing) return;
+    if (reading() || editing) return;
     if (buffer()) send(e.target, e.detail.value, e.detail.ends); else write(e.target, e.detail.value, e.detail.ends);
   });
   // A row given a value: written anew; or, where the file does not write it,
@@ -11154,7 +11248,7 @@ pixels.
       onclick: (e) => { e.stopPropagation(); markDone(li); } }));
   }
   stackHost.addEventListener('pointerdown', (e) => {
-    if (readOnly || buffer() || editing || e.target.closest('.done-reveal, .cards-check')) return;
+    if (reading() || buffer() || editing || e.target.closest('.done-reveal, .cards-check')) return;
     if (!e.target.closest('li.revealed')) cover();
     const li = itemOf(e.target);
     if (li && !li.classList.contains('revealed')) swipe = { li, x: e.clientX, y: e.clientY, dx: 0, on: false };
@@ -11186,7 +11280,7 @@ pixels.
   let pressed = false;
   stackHost.addEventListener('pointerdown', (e) => {
     pressed = false;
-    if (readOnly || buffer() || editing) return;
+    if (reading() || buffer() || editing) return;
     const section = e.target.closest('.cards-group[data-group]');
     if (!section || e.target.closest('.record-more')) return;
     pressTimer = setTimeout(() => { pressed = true; openRecordSheet(Number(section.dataset.group)); }, 520);
@@ -11200,10 +11294,12 @@ pixels.
   stackHost.addEventListener('click', (e) => {
     if (pressed) { pressed = false; return; }
     if (swiped) { swiped = false; return; } // a swipe is no tap
+    // a front page's last line: its file, opened as any file is
+    if (e.target.closest('.front-file')) { openFile(file().path); return; }
     // a buffer: what the person does goes to its owner, never into the markdown
     if (buffer()) { buffered(e); return; }
     // read only: a link of the repo opens here, any other is followed; nothing is edited
-    if (readOnly) {
+    if (reading()) {
       const a = e.target.closest('a');
       const to = a && source && file() && file().path && linked(file().path, a.getAttribute('href'));
       if (to) { e.preventDefault(); openFile(to); }
@@ -11286,18 +11382,23 @@ pixels.
 
   // --- the folder's files, on the left (served only) ---------------------
 
-  // A markdown file opens in the bench, once: opened again, it is the
-  // one already open, with its edits. Any other opens in a tab of its own.
+  // A file opens in the bench by its kind (paths.js's opens), once:
+  // opened again, it is the one already open, with its edits.
   let openedOne = false;
-  // `stay`: the files stay shown on a phone's width (a folder's front page, opened with the folder, under its list)
-  async function openFile(p, { stay = false } = {}) {
-    if (!/\.(md|markdown)$/i.test(p)) { window.open(source.raw(p), '_blank', 'noopener'); return; }
+  let opening = 0; // the last file asked for
+  // `stay`: the files stay shown on a phone's width (a folder's front page, opened with the folder, under its list);
+  // `front`: drawn as its folder's front page, read, ending with its line (else the file itself)
+  async function openFile(p, { stay = false, front = false } = {}) {
+    const asked = ++opening;
     const open = files.findIndex((f) => f.path === p);
     if (open < 0) {
       let got;
-      try { got = await source.read(p); } catch (e) { toast(e.message); return; }
-      files.push({ name: p, path: p, source: got.text, saved: got.text, version: got.version, view: 'cards', earlier: [] });
+      try { got = await readFile(p); } catch (e) { toast(e.message); return; }
+      // another file asked for while this one was read: that one opens
+      if (asked !== opening) return;
+      files.push({ name: p, path: p, view: 'cards', earlier: [], ...got });
     }
+    files[open < 0 ? files.length - 1 : open].front = front;
     // the first file opened takes the URL's place in the history; each after, a step of its own
     if (source.opened) source.opened(p, !openedOne);
     openedOne = true;
@@ -11315,6 +11416,32 @@ pixels.
     // the page that is wanted, so they fold away (the button brings them back).
     if (NARROW.matches && !stay) fold(true);
   }
+  // What a file opens as, and what it is drawn from: markdown, its text
+  // as cards, to edit; text, its words; any other, its URL (a PDF's, where
+  // the browser's viewer takes it) and, for other, its size. A file whose
+  // extension names no kind is judged by its bytes.
+  async function readFile(p) {
+    const name = p.split('/').pop();
+    let bytes;
+    if (!named(name)) {
+      const res = await fetch(source.raw(p)).catch(() => null);
+      if (!res || !res.ok) throw new S.Said(`${p} could not be read.`);
+      bytes = new Uint8Array(await res.arrayBuffer());
+    }
+    const kind = opens(name, bytes);
+    if (kind === 'cards') { const got = await source.read(p); return { source: got.text, saved: got.text, version: got.version }; }
+    if (kind === 'text') return { opens: kind, text: bytes ? new TextDecoder().decode(bytes) : (await source.read(p)).text };
+    if (kind === 'pdf') return { opens: kind, url: (source.pdf || source.raw)(p) };
+    if (kind !== 'other') return { opens: kind, url: source.raw(p) };
+    let size = bytes ? bytes.length : null;
+    if (size === null) {
+      const res = await fetch(source.raw(p), { method: 'HEAD' }).catch(() => null);
+      const told = res && res.ok && res.headers.get('content-length');
+      size = told ? Number(told) : null;
+    }
+    return { opens: kind, url: source.raw(p), size };
+  }
+
   // The files folded away, or shown. Narrow: editing.css's phone width.
   const NARROW = window.matchMedia('(max-width: 920px)');
   function fold(folded) {
@@ -11342,12 +11469,14 @@ pixels.
   // whether there is aught to save.
   function drawServed() {
     const f = file();
-    const view = f ? f.view : 'cards';
+    // a file not opened as cards has no markdown to show: its page alone
+    const md = !!f && !f.opens;
+    const view = md ? f.view : 'cards';
     document.body.dataset.view = view;
-    document.querySelectorAll('#views button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
-    text.disabled = !f;
-    text.readOnly = readOnly;
-    if (text.value !== (f ? f.source : '')) text.value = f ? f.source : '';
+    document.querySelectorAll('#views button').forEach((b) => { b.setAttribute('aria-pressed', String(b.dataset.view === view)); b.disabled = !!f && !md; });
+    text.disabled = !md;
+    text.readOnly = readOnly || !!(f && f.front);
+    if (text.value !== (md ? f.source : '')) text.value = md ? f.source : '';
     const dirty = !!f && unsaved(f);
     $('#save').disabled = !dirty;
     $('#cancel').disabled = !dirty;
@@ -11410,7 +11539,7 @@ pixels.
   }
 
   // A folder's rows, as a list (paths.js's listing: folders first, then
-  // files, each its own row); a folder opens in place, below its name, and
+  // files, each its own row, a file by its whole name, a folder's ending in `/`); a folder opens in place, below its name, and
   // opens its front page (its README.md, not a row) with the list kept.
   async function folder(p, into) {
     let listed;
@@ -11427,11 +11556,11 @@ pixels.
           if (!opening) return;
           inside ??= folder(f.path, kids);
           const { front } = await inside;
-          if (front) openFile(front, { stay: true });
+          if (front) openFile(front, { stay: true, front: true });
         };
-        li.append(el('button', { type: 'button', class: 'dir', textContent: f.name, ariaExpanded: 'false', data: { path: f.path }, onclick: toggle }), kids);
+        li.append(el('button', { type: 'button', class: 'dir', textContent: `${f.name}/`, ariaExpanded: 'false', data: { path: f.path }, onclick: toggle }), kids);
       } else {
-        li.append(el('button', { type: 'button', class: /\.(md|markdown)$/i.test(f.name) ? 'file' : 'file other',
+        li.append(el('button', { type: 'button', class: opens(f.name) === 'cards' ? 'file' : 'file other',
           textContent: f.name, title: f.path, data: { path: f.path }, onclick: () => openFile(f.path) }));
       }
       return li;
@@ -11612,7 +11741,8 @@ pixels.
       const top = folder('', $('#files-tree'));
       settingsPanel();
       // the file the URL names, or the folder's front page (its README.md), opened first
-      (source.start ? source.start() : top.then((l) => l.front)).then((p) => (p ? openFile(p) : null), (e) => toast(e.message));
+      const front = !(at && at.kind === 'blob');
+      (source.start ? source.start() : top.then((l) => l.front)).then((p) => (p ? openFile(p, { front }) : null), (e) => toast(e.message));
       // back and forward: the file the URL then names
       window.addEventListener('popstate', () => { const r = S.route(location.pathname); if (r && r.kind === 'blob' && r.path) openFile(r.path); });
     } else {
