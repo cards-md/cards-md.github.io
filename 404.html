@@ -748,6 +748,13 @@
 .cards-lead { position: absolute; left: calc(-1 * (var(--marker-box) + var(--cards-marker-gap))); width: var(--marker-box); color: var(--cards-accent); }
 .cards-lead.cards-lead-inline { position: relative; left: 0; width: auto; flex: none; }
 .cards-lead::after { left: 50%; right: auto; width: var(--cards-target); transform: translate(-50%, -50%); }
+/* a lone act (SPEC.md, "An act row"): the lead's target is the whole act line, so a tap on its words does the act;
+   the lead stands where the bullet would, its icon centred in the marker's box; the trailing buttons stand over it */
+.cards-act-line.cards-whole { position: relative; }
+.cards-lead.cards-lead-whole { left: calc(-1 * (var(--marker-box) + var(--cards-marker-gap))); top: 0; bottom: 0; right: auto;
+  width: calc(100% + var(--marker-box) + var(--cards-marker-gap)); height: auto; transform: none; justify-content: flex-start; }
+.cards-lead.cards-lead-whole::after { content: none; }
+.cards-lead.cards-lead-whole .cards-button-glyph { width: var(--marker-box); text-align: center; }
 .cards-act-row .cards-button[data-role="main"] { background: none; box-shadow: none; color: var(--cards-accent); }
 /* a label's digits (`⏪30`) small under its icon */
 .cards-button-count { position: absolute; left: 0; right: 0; bottom: -0.55em; font: 600 9px var(--cards-mono); text-align: center; }
@@ -1160,6 +1167,13 @@ body.files-folded .files-foot, body.files-folded .settings { display: none; }
 body.settings-open .files > :not(.settings) { display: none; }
 #open-settings.unsaved::after { content: ' •'; font-weight: 700; }
 .settings[hidden] { display: none; }
+/* the repo's agents file: a button in the files' foot when the root has one; a panel over the file view, as cards (read only) */
+#open-agents[hidden], .agents[hidden] { display: none; }
+body.agents-open .file-views { display: none; }
+.agents { margin-bottom: 16px; }
+.agents h2 { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin: 0; padding: 14px 16px 0; font-size: 12px; }
+.agents h2 span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agents-help { margin: 0; padding: 4px 16px 0; font-size: 11px; opacity: 0.75; }
 .settings h2 span { overflow: visible; }
 .settings-folder { margin: 0 0 10px; padding: 8px 10px; border-radius: 10px; background: var(--lit); font-size: 12px; }
 .settings-folder[hidden] { display: none; }
@@ -1184,7 +1198,7 @@ body.settings-open .files > :not(.settings) { display: none; }
   <nav class="files" aria-label="Files">
     <h2><span></span><button type="button" id="fold-files" class="pill" aria-expanded="true" title="Fold the files away">&lt;</button></h2>
     <ul id="files-tree"></ul>
-    <div class="files-foot"><button type="button" id="open-settings" class="pill" aria-expanded="false" aria-controls="settings">Settings</button></div>
+    <div class="files-foot"><button type="button" id="open-agents" class="pill" aria-expanded="false" aria-controls="agents" hidden>Agents</button> <button type="button" id="open-settings" class="pill" aria-expanded="false" aria-controls="settings">Settings</button></div>
     <section id="settings" class="settings" aria-label="Settings" hidden>
       <h2><span>Settings</span><button type="button" id="close-settings" class="pill">Close</button></h2>
       <p id="settings-folder" class="settings-folder" hidden></p>
@@ -1204,6 +1218,11 @@ body.settings-open .files > :not(.settings) { display: none; }
         <button type="button" class="pill" data-view="cards" aria-pressed="true">Cards</button><button type="button" class="pill" data-view="md" aria-pressed="false">Md</button><button type="button" class="pill" data-view="split" aria-pressed="false">Split</button>
       </div>
     </div>
+    <section id="agents" class="phone agents" aria-label="Agents" hidden>
+      <h2><span id="agents-name"></span><button type="button" id="close-agents" class="pill">Close</button></h2>
+      <p class="agents-help">Read only: the repo's agents file, as cards.</p>
+      <div id="agents-body"></div>
+    </section>
     <div class="file-views">
   <div class="phone">
     <header class="topbar">
@@ -6866,9 +6885,14 @@ function render(markdown, { choices, secrets, actions, images, colours, buffer, 
       if (lineOf(it.markdown, it.buttons, it.footnotes)) return `<li class="${[it.task && 'cards-task', it.done && 'cards-done', 'cards-toolbar-row'].filter(Boolean).join(' ')}"${at(it)}${to(it)}>${box}${toolbarLine(it.buttons, roles)}${kids}</li>`;
       if (!act) return `<li${cls ? ` class="${cls}"` : ''}${sign ? ` data-sign="${esc(it.mark)}"` : ''}${at(it)}${to(it)}>${box}${markup(words, b.tight)}${marks(it.footnotes)}${chips(it.buttons, roles)}${kids}</li>`;
       if (it.lead) words = words.replace(LEAD, '');
-      const lead = it.lead ? chip(it.lead, buttonRoles(roles, [it.lead], false)[0], true).replace('cards-button-alone', `cards-button-alone cards-lead${it.task ? ' cards-lead-inline' : ''}`) : '';
+      const body = actWords(words);
+      // a lone act (SPEC.md, "An act row"): no link among its words, so its lead's target is the whole line, in its
+      // own act line (the lead lies in it, and its words and trailing buttons stand over it); a task keeps its box
+      const whole = !!it.lead && !it.task && !/<a[ >]/.test(body) && !(it.footnotes && it.footnotes.length);
+      const lead = it.lead ? chip(it.lead, buttonRoles(roles, [it.lead], false)[0], true).replace('cards-button-alone', `cards-button-alone cards-lead${it.task ? ' cards-lead-inline' : ''}${whole ? ' cards-lead-whole' : ''}`) : '';
       const trail = it.buttons ? `<span class="cards-buttons cards-trail">${buttonRoles(roles, it.buttons, false).map((r, i) => chip(it.buttons[i], r, true)).join('')}</span>` : '';
-      return `<li class="${cls}"${sign ? ` data-sign="${esc(it.mark)}"` : ''}${at(it)}${to(it)}>${box}${it.task ? '' : lead}<div class="cards-act-line">${it.task ? lead : ''}${actWords(words)}${marks(it.footnotes)}${trail}</div>${kids}</li>`;
+      if (whole) return `<li class="${cls}"${sign ? ` data-sign="${esc(it.mark)}"` : ''}${at(it)}${to(it)}>${box}<div class="cards-act-line cards-whole">${lead}${body}${marks(it.footnotes)}${trail}</div>${kids}</li>`;
+      return `<li class="${cls}"${sign ? ` data-sign="${esc(it.mark)}"` : ''}${at(it)}${to(it)}>${box}${it.task ? '' : lead}<div class="cards-act-line">${it.task ? lead : ''}${body}${marks(it.footnotes)}${trail}</div>${kids}</li>`;
     };
     // items from `k` at `depth`, as one list; returns [markup, next k]
     const draw = (k, depth, ordered, first) => {
@@ -8740,7 +8764,15 @@ globalThis.cardsCall = function (json) {
     try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); return 'text'; } catch { return 'other'; }
   }
 
-  return { linked, raw, listing, hidden, HIDDEN, opens, named, extension, KINDS };
+  /** The repo root's agents file (the path of AGENTS.md, else CLAUDE.md, in
+   *  any case), or null: the root's own files, given as a listing's entries. */
+  function agentsIn(entries) {
+    const files = entries.filter((e) => !e.dir);
+    const at = (n) => files.find((e) => e.name.toLowerCase() === n);
+    return (at('agents.md') ?? at('claude.md'))?.path ?? null;
+  }
+
+  return { linked, raw, listing, hidden, HIDDEN, opens, named, extension, KINDS, agentsIn };
 }));
 </script>
 <script>// The editors, one per card kind: each takes the stack and a card's
@@ -10784,7 +10816,7 @@ pixels.
   // from a source (proto/source.js): this machine's folder (proto/serve.js),
   // or a public GitHub repo, read only; else the bench's own samples.
   const served = document.getElementById('serve') ? JSON.parse(document.getElementById('serve').textContent) : null;
-  const { linked, opens, named, extension } = window.cardsPaths;
+  const { linked, opens, named, extension, agentsIn } = window.cardsPaths;
   const S = window.cardsSources;
   // the person's settings kept in this browser (a private window may keep nothing)
   const store = (() => { try { const t = window.localStorage; t.getItem('x'); return t; } catch { return null; } })();
@@ -11996,6 +12028,31 @@ pixels.
     load();
   }
 
+  // --- the repo's agents file (served only): AGENTS.md at the root, else CLAUDE.md ----
+  //
+  // A button in the files' foot shows only when the root has one. It opens a
+  // panel over the file view, drawn as cards and read only, read again each
+  // time it opens.
+  function agentsPanel(p) {
+    const panel = $('#agents');
+    const opener = $('#open-agents');
+    $('#agents-name').textContent = p;
+    async function show(open) {
+      if (open) {
+        let got;
+        try { got = await source.read(p); } catch (e) { toast(e.message); return; }
+        $('#agents-body').innerHTML = lib.html(got.text, { colours });
+      }
+      panel.hidden = !open;
+      document.body.classList.toggle('agents-open', open);
+      opener.setAttribute('aria-expanded', String(open));
+      if (open) $('#close-agents').focus(); else opener.focus();
+    }
+    opener.hidden = false;
+    opener.addEventListener('click', () => show(panel.hidden));
+    $('#close-agents').addEventListener('click', () => show(false));
+  }
+
   if (served) {
     document.body.classList.add('served');
     // wide until the settings say otherwise (proto/settings.js)
@@ -12034,6 +12091,7 @@ pixels.
     if (source) {
       $('.files h2 span').textContent = source.name;
       const top = folder('', $('#files-tree'));
+      top.then((l) => { const a = agentsIn(l.rows); if (a) agentsPanel(a); });
       settingsPanel();
       // the file the URL names, or the folder's front page (its README.md), opened first
       const front = !(at && at.kind === 'blob');
