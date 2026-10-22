@@ -1172,6 +1172,7 @@ body.settings-open .files > :not(.settings) { display: none; }
 .settings-help { margin: 12px 0 0; font-size: 11px; line-height: 1.4; opacity: 0.75; }
 .settings-help code { font: 400 11px/1 var(--mono); }
 .settings .savebar { padding: 12px 0 4px; background: var(--desk); flex-wrap: wrap; }
+.settings .savebar[hidden] { display: none; }
 .settings #settings-note { flex-basis: 100%; font-size: 12px; }
 
 /* read only (a public repo, cards-md.github.io): nothing to save or undo, no card edited */
@@ -10562,7 +10563,9 @@ pixels.
 //   settings               { where, load(), save(draft, version) }: the panel's (settings.js's answer)
 //   start                  the file to open first, if any; opened(path), told as each opens
 //
-// server(): proto/serve.js over a folder of this machine, read and written.
+// server(): proto/serve.js over a folder of this machine, read and written;
+// or, readOnly, any server that answers its reads alone (a private reader):
+// no write, and settings drawn for the visit, never saved.
 // github(): a public GitHub repo, read only, its files listed by one call to
 // GitHub's API and read from raw.githubusercontent.com (jsDelivr where
 // GitHub refuses); the person's settings kept in this browser, as the rows
@@ -10579,9 +10582,9 @@ pixels.
 
   // --- the local server ----------------------------------------------------
 
-  function server({ folder, fetch = globalThis.fetch } = {}) {
+  function server({ folder, readOnly = false, fetch = globalThis.fetch } = {}) {
     const text = async (res) => res.text();
-    return {
+    const made = {
       name: folder,
       async list(p) {
         const res = await fetch(`/files?path=${encodeURIComponent(p)}`);
@@ -10614,6 +10617,8 @@ pixels.
         },
       },
     };
+    if (readOnly) { delete made.write; delete made.settings.save; }
+    return made;
   }
 
   // --- a public GitHub repo --------------------------------------------------
@@ -10787,7 +10792,7 @@ pixels.
   const source = !served ? null
     : served.kind === 'github'
       ? (at ? S.github(at, { lib, defaults: served.defaults, presets: served.presets, store, go: (url, first) => { if (location.pathname !== url) history[first ? 'replaceState' : 'pushState'](null, '', url); } }) : null)
-      : S.server({ folder: served.folder });
+      : S.server({ folder: served.folder, readOnly: !!served.readOnly });
   // Nothing written back: a tap reads, and no card is edited
   const readOnly = !!served && !(source && source.write);
   // Nothing on the page is edited: read only, a file not opened as cards
@@ -11863,7 +11868,9 @@ pixels.
   // stands over the files, at their width. The page's choices are
   // selects; space, type and the colours a preset each, whose values are
   // written as rows (Custom, when the values drawn match none). The
-  // folder's values win, and are said once, at the top.
+  // folder's values win, and are said once, at the top. A source that
+  // keeps nothing (a private reader) draws the choices for the visit,
+  // and offers no Save.
   function settingsPanel() {
     const S = window.cardsSettings;
     const panel = $('#settings');
@@ -11871,6 +11878,8 @@ pixels.
     const sheet = $('#cards-settings');
     let given = null; // the server's last answer
     let draft = null; // the person's values, as changed here: { Section: { key: value } }
+    const keeps = !!source.settings.save;
+    $('#settings .savebar').hidden = !keeps;
 
     const keyOf = (sec, k) => given.sections.find((x) => x.name === sec).keys.find((x) => x.key === k);
     const defaultsOf = () => Object.fromEntries(given.sections.map((sec) => [sec.name, Object.fromEntries(sec.keys.map((k) => [k.key, k.default]))]));
@@ -11892,7 +11901,7 @@ pixels.
         if (v) document.documentElement.dataset[k] = v; else delete document.documentElement.dataset[k];
       }
       drawPictures(); // the measure may have moved with the type
-      const dirty = !same(draft, saved());
+      const dirty = keeps && !same(draft, saved());
       $('#settings-save').disabled = !dirty;
       $('#settings-cancel').disabled = !dirty;
       $('#open-settings').classList.toggle('unsaved', dirty);
@@ -11908,7 +11917,7 @@ pixels.
     }
 
     function draw() {
-      $('#settings-file').textContent = given.person;
+      if ($('#settings-file')) $('#settings-file').textContent = given.person;
       // the folder's file, said once: which keys it sets
       const theirs = given.sections.flatMap((sec) => sec.keys.filter((o) => 'folder' in o)
         .map((o) => (sec.name === 'Light' || sec.name === 'Dark' ? `${sec.name.toLowerCase()} ${o.key}` : o.key)));
@@ -11983,7 +11992,7 @@ pixels.
     $('#close-settings').addEventListener('click', () => show(false));
     $('#settings-save').addEventListener('click', save);
     $('#settings-cancel').addEventListener('click', () => { draft = saved(); changed(); });
-    window.addEventListener('beforeunload', (e) => { if (given && !same(draft, saved())) e.preventDefault(); });
+    window.addEventListener('beforeunload', (e) => { if (keeps && given && !same(draft, saved())) e.preventDefault(); });
     load();
   }
 
