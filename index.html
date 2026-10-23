@@ -2983,25 +2983,25 @@ module.exports = {
   rowScale: 1.066667,
   cellChars: 32.432432,
   perChar: 7.5,
-  intercept: -20.31,
+  intercept: -20.35,
   costs: {
-    prose: 26.77,
-    blank: 14.27,
-    h12: 35.61,
+    prose: 26.75,
+    blank: 14.3,
+    h12: 35.57,
     h3plus: 36,
-    item: 12.3,
-    itemLine: 22.4,
-    row: 21.39,
-    rowLine: 26.58,
-    tableRow: 37.95,
-    tableWrap: 17.93,
-    table: -5.46,
-    codeLine: 21.44,
-    codeBlock: 17.71,
-    quote: 29.5,
-    picture: 45.15,
+    item: 12.17,
+    itemLine: 22.42,
+    row: 21.53,
+    rowLine: 26.44,
+    tableRow: 37.97,
+    tableWrap: 17.91,
+    table: -5.57,
+    codeLine: 21.51,
+    codeBlock: 17.13,
+    quote: 29.88,
+    picture: 44.74,
     pictureRow: 18.76,
-    pictureKey: 10.35
+    pictureKey: 10.32
   }
 };
 
@@ -5073,6 +5073,116 @@ function editTable(markdown, c, table) {
 module.exports = { replaceCard, insertCard, moveCard, toggleDone, editRows, setRow, insertRow, editItems, editHeading, editCode, editQuote, editTable };
 
 },
+"./apply": function (module, exports, require) {
+/**
+ * Ops over a page (SPEC.md, "Editing cards"; vectors/card-ops.json). A writer
+ * says what it did as a list of ops, each naming its card by its index in
+ * the before-page and by `fp`, the card's fingerprint; `apply` makes the
+ * page those ops give, with the edits' own functions, so what it writes is
+ * what a UI's edit writes, byte for byte.
+ *
+ * The check runs before each op, against the before-page: a card that is
+ * not there, or whose fingerprint differs, is `stale`. An index always
+ * means the before-page's card, however earlier ops moved the page. Two
+ * cards of the same text have the same fingerprint, so the check cannot
+ * tell them apart: it holds the index, and the index holds the card.
+ */
+
+const { stack } = require('./stack');
+const edits = require('./edits');
+const { isBlank } = require('./blocks');
+
+/** FNV-1a, 32 bits, over UTF-16 code units: eight lowercase hex digits. */
+function fingerprint(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+// A card's written lines: the reader's range, blank edge lines left out.
+function cardText(lines, [start, end]) {
+  while (start < end - 1 && isBlank(lines[start])) start++;
+  while (end > start + 1 && isBlank(lines[end - 1])) end--;
+  return lines.slice(start, end).join('\n');
+}
+
+const nulls = (n) => Array(Math.max(n, 0)).fill(null);
+
+/**
+ * Apply `ops` to `before`, in list order.
+ * @param {string} before the page
+ * @param {Array<object>} ops setRow, editRows, insertRow, toggleDone,
+ *   insertCard, moveCard, replaceCard: the edits' arguments by name, with
+ *   `card` (insertCard: `after`; moveCard: `to` also) and `fp` (moveCard: `toFp`);
+ *   toggleDone's item is `item`
+ * @returns {{page: string} | {error: 'stale' | 'unsupported', at: number, why?: string}}
+ *   never throws; `at` is the op's index in `ops`
+ */
+function apply(before, ops) {
+  if (typeof before !== 'string' || !Array.isArray(ops)) return { error: 'unsupported', at: 0, why: 'a page and a list of ops' };
+  const first = stack(before);
+  const lines = before.split('\n');
+  const total = first.cards.length;
+  // the before-page's card standing at each place in the page now (null: one made since)
+  const here = first.cards.map((_, i) => i);
+  let page = before;
+  for (let i = 0; i < ops.length; i++) {
+    const op = ops[i] || {};
+    const stale = (card) => ({ error: 'stale', at: i, why: `card ${card} is not as the op saw it` });
+    const place = (card, fp) => {
+      const c = first.cards[card];
+      if (!Number.isInteger(card) || !c || typeof fp !== 'string' || fingerprint(cardText(lines, c.lines)) !== fp) return null;
+      const p = here.indexOf(card);
+      return p < 0 ? null : p;
+    };
+    try {
+      let out;
+      let p;
+      switch (op.op) {
+        case 'insertCard': {
+          if (op.after === -1) p = -1;
+          else if ((p = place(op.after, op.fp)) === null) return stale(op.after);
+          out = edits.insertCard(page, p, op.text);
+          here.splice(p + 1, 0, ...nulls(stack(out).cards.length - here.length));
+          break;
+        }
+        case 'moveCard': {
+          if ((p = place(op.card, op.fp)) === null) return stale(op.card);
+          let to = here.length;
+          if (op.to !== total && (to = place(op.to, op.toFp)) === null) return stale(op.to);
+          out = edits.moveCard(page, p, to);
+          if (to !== p && to !== p + 1) here.splice(to > p ? to - 1 : to, 0, ...here.splice(p, 1));
+          break;
+        }
+        case 'setRow': case 'editRows': case 'insertRow': case 'toggleDone': case 'replaceCard': {
+          if ((p = place(op.card, op.fp)) === null) return stale(op.card);
+          out = op.op === 'setRow' ? edits.setRow(page, p, op.row, op.value)
+            : op.op === 'editRows' ? edits.editRows(page, p, op.rows)
+              : op.op === 'insertRow' ? edits.insertRow(page, p, op.after, op.key, op.value)
+                : op.op === 'toggleDone' ? edits.toggleDone(page, p, op.item)
+                  : edits.replaceCard(page, p, op.text);
+          // the card stays the same card unless the count of cards changed (one taken out, a text of more)
+          const delta = stack(out).cards.length - here.length;
+          if (delta !== 0) here.splice(p, 1, ...nulls(delta + 1));
+          break;
+        }
+        default:
+          return { error: 'unsupported', at: i, why: `no op ${JSON.stringify(op.op)}` };
+      }
+      page = out;
+    } catch (e) {
+      return { error: 'unsupported', at: i, why: String(e && e.message) };
+    }
+  }
+  return { page };
+}
+
+module.exports = { apply, fingerprint };
+
+},
 "./diff": function (module, exports, require) {
 /**
  * What changed between two versions of a file, said as cards.md's own
@@ -5545,6 +5655,7 @@ module.exports = { readMotion, resolve, events, settle, PRESETS, TREE };
 // would any other, so its words still read.
 
 const { schemeOf } = require('./buttons');
+const { durationOf } = require('./values');
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // a number as written: `1,340`, `8412`, `7.5`; empty is none; anything else is no number
@@ -5996,7 +6107,35 @@ function photosFigure(card, title) {
   return { cols, rows, said: `${title ? `${title}: ` : ''}${all.filter(Boolean).map((p) => p.alt || 'a photo').join(', ')}` };
 }
 
-const FIGURES = { bars: barsFigure, line: lineFigure, grid: gridFigure, photos: photosFigure, viewinfo: viewinfoFigure };
+/**
+ * media_audio: an audio item, as a card of rows: `Source` (required: a
+ * path, the key a host's live values go by), `Title`, `Show`, `Duration`
+ * and `Position` (the duration form, `1:12:04`), `Rate` (`1.5×`). It
+ * reads no page: a Title or Show not written stays absent, the host's to
+ * fill from the Source's page. A key that repeats gives its first row.
+ *
+ * Its figure: `source`, `title` (the Title row, else the callout's own
+ * title), `show`, `duration` and `position` in seconds, `rate` a number;
+ * each null where absent, or where it is not the form (Position past
+ * Duration is kept as read). Null where there is no Source, or it is empty.
+ */
+const first = (card, key) => rowsOf(card, key)[0]?.trim() || null;
+const RATE = /^(\d+(?:\.\d+)?)\s*×?$/;
+function mediaFigure(card, title) {
+  const source = first(card, 'source');
+  if (source === null) return null;
+  const rate = RATE.exec(first(card, 'rate') ?? '');
+  return {
+    source,
+    title: first(card, 'title') ?? title ?? null,
+    show: first(card, 'show'),
+    duration: durationOf(first(card, 'duration')),
+    position: durationOf(first(card, 'position')),
+    rate: rate && Number(rate[1]) > 0 ? Number(rate[1]) : null,
+  };
+}
+
+const FIGURES = { bars: barsFigure, line: lineFigure, grid: gridFigure, photos: photosFigure, viewinfo: viewinfoFigure, media_audio: mediaFigure };
 
 /**
  * A card's figure, as every host draws it: null where its type has none,
@@ -6330,7 +6469,7 @@ const figureOf = (card, title, colours) => (colours && Object.keys(colours).leng
 function draw(card, title, options = {}) {
   const f = figureOf(card, title, options.colours);
   const sized = options.width !== undefined;
-  return f ? DRAWERS[card.type](f, title, { ...options, W: sized ? options.width : PLANE, sized }) : null;
+  return f && DRAWERS[card.type] ? DRAWERS[card.type](f, title, { ...options, W: sized ? options.width : PLANE, sized }) : null;
 }
 
 // How wide each kind would be, its marks at their own size: a grid's
@@ -7090,7 +7229,7 @@ module.exports = {"➕":"plus","➖":"minus","✏":"pencil","📝":"square-pen",
     if (!loaded[name]) { loaded[name] = { exports: {} }; modules[name](loaded[name], loaded[name].exports, need); }
     return loaded[name].exports;
   }
-  globalThis.cardsmd = Object.assign({}, need('./blocks'), need('./stack'), need('./records'), need('./edits'), need('./diff'), need('./html'), need('./marks'), need('./choices'), need('./secrets'), need('./actions'), { roleOf: need('./roles').roleOf, buttonRoles: need('./roles').buttonRoles, iconOf: need('./roles').iconOf, icons: need('./roles').icons }, { rowInput: need('./buffers').rowInput, lookText: need('./look').lookText, rowField: need('./fields').rowField, unwritten: need('./fields').unwritten, spanAt: need('./fields').spanAt, writeSpan: need('./fields').writeSpan }, need('./links'),
+  globalThis.cardsmd = Object.assign({}, need('./blocks'), need('./stack'), need('./records'), need('./edits'), { apply: need('./apply').apply, fingerprint: need('./apply').fingerprint }, need('./diff'), need('./html'), need('./marks'), need('./choices'), need('./secrets'), need('./actions'), { roleOf: need('./roles').roleOf, buttonRoles: need('./roles').buttonRoles, iconOf: need('./roles').iconOf, icons: need('./roles').icons }, { rowInput: need('./buffers').rowInput, lookText: need('./look').lookText, rowField: need('./fields').rowField, unwritten: need('./fields').unwritten, spanAt: need('./fields').spanAt, writeSpan: need('./fields').writeSpan }, need('./links'),
     { schemeOf: need('./buttons').schemeOf, targetOf: need('./buttons').targetOf, glyphOf: need('./buttons').glyphOf },
     { WHEEL: need('./wheel').WHEEL, wheel: need('./wheel').wheel, wheelPlace: need('./wheel').place, swipeSteps: need('./wheel').swipeSteps }, need('./values'),
     { drawPicture: need('./pictures').draw, pictureWidth: need('./pictures').widthFor, colourSlot: need('./pictures').slotOf },
